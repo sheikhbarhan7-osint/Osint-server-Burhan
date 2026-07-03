@@ -1057,7 +1057,7 @@ def btn_developer(message):
         dev_text = (
             UI.header('DEVELOPER ZONE') + '\n' +
             UI.section('CREATOR', E.CROWN) +
-            E.HACKER + ' <b>Developer:</b> RAHUL\n' +
+            E.HACKER + ' <b>Developer:</b> SHEIKH BURHAN\n' +
             E.STAR + ' <b>Channel:</b> ' + YOUR_CHANNEL + '\n' +
             E.ROBOT + ' <b>Bot:</b> ' + BOT_USERNAME + '\n' +
             E.SPARKLES + ' <b>Version:</b> 7.0 PRODUCTION\n' +
