@@ -18,7 +18,7 @@ from telebot.types import (
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = "8875990060:AAHOyZPWzv4U0xZwRiLGJNEVJlt96EiCYTU"
 YOUR_CHANNEL = "@PUBG_BGMI_IOS_HACKS"
-BOT_USERNAME = "@OSINTMasterProBot"
+BOT_USERNAME = "@mental_osint_server_bot"
 
 # ADMIN IDs - Owner ID added
 ADMIN_IDS = [2062068620, 788333999]  # Owner ID + Your ID
