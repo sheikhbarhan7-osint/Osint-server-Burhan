@@ -16,7 +16,7 @@ from telebot.types import (
 )
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "8875990060:AAHOyZPWzv4U0xZwRiLGJNEVJlt96EiCYTU"
+BOT_TOKEN = "8875990060:AAHGnEiqPvMxFAED5pgp4FOlXX3eyz1bQVI"
 YOUR_CHANNEL = "@PUBG_BGMI_IOS_HACKS"
 BOT_USERNAME = "@mental_osint_server_bot"
 
