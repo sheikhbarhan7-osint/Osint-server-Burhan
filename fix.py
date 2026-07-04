@@ -21,7 +21,7 @@ YOUR_CHANNEL = "@PUBG_BGMI_IOS_HACKS"
 BOT_USERNAME = "@mental_osint_server_bot"
 
 # ADMIN IDs - Owner ID added
-ADMIN_IDS = [2062068620, 788333999]  # Owner ID + Your ID
+ADMIN_IDS = [2062068620]  # Owner ID + Your ID
 
 # ==================== NEW API CONFIGURATION ====================
 API_KEYS = {
