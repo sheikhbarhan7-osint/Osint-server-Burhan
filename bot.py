@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import uuid
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -12,9 +13,9 @@ from pytgcalls.types import MediaStream
 
 import yt_dlp
 
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-API_ID = int(os.environ.get('API_ID', 0))
-API_HASH = os.environ.get('API_HASH')
+BOT_TOKEN      = os.environ.get('BOT_TOKEN')
+API_ID         = int(os.environ.get('API_ID', 0))
+API_HASH       = os.environ.get('API_HASH')
 SESSION_STRING = os.environ.get('SESSION_STRING')
 
 AUTHORIZED_USERS = [
@@ -32,11 +33,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app: Client = None
+app: Client     = None
 call: PyTgCalls = None
-active_chats = {}
+active_chats    = {}
 
 COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
+TMP_DIR      = '/tmp/burhan_music'
+os.makedirs(TMP_DIR, exist_ok=True)
 
 def is_authorized_user(user_id: int) -> bool:
     return user_id in AUTHORIZED_USERS
@@ -55,298 +58,265 @@ def is_authorized(update: Update) -> tuple:
     return True, "ok"
 
 def get_ydl_base_opts() -> dict:
-    """Base yt-dlp options with cookies and network fixes."""
     opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'nocheckcertificate': True,
-        'source_address': '0.0.0.0',
-        'geo_bypass': True,
+        'quiet'              : True,
+        'no_warnings'        : True,
+        'nocheckcertificate' : True,
+        'source_address'     : '0.0.0.0',
+        'geo_bypass'         : True,
     }
     if os.path.exists(COOKIES_FILE):
         opts['cookiefile'] = COOKIES_FILE
     return opts
 
+def delete_temp(path: Optional[str]):
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+            logger.info(f"🗑️ Deleted temp: {path}")
+    except Exception:
+        pass
+
 def search_youtube(query: str) -> Optional[str]:
-    """Search YouTube and return first result URL."""
     try:
         opts = get_ydl_base_opts()
-        opts.update({
-            'extract_flat': True,
-            'default_search': 'ytsearch',
-        })
+        opts['extract_flat'] = True
         with yt_dlp.YoutubeDL(opts) as ydl:
             results = ydl.extract_info(f"ytsearch1:{query}", download=False)
             if results and 'entries' in results and results['entries']:
-                entry = results['entries'][0]
-                video_id = entry.get('id')
-                if video_id:
-                    return f"https://www.youtube.com/watch?v={video_id}"
+                vid_id = results['entries'][0].get('id')
+                if vid_id:
+                    return f"https://www.youtube.com/watch?v={vid_id}"
         return None
     except Exception as e:
         logger.error(f"Search error: {e}")
         return None
 
-def get_audio_url(youtube_url: str) -> Optional[str]:
-    """Get best audio stream URL from YouTube."""
+def download_audio(youtube_url: str) -> Optional[str]:
+    uid      = uuid.uuid4().hex
+    out_tmpl = os.path.join(TMP_DIR, f"{uid}.%(ext)s")
+    opts = get_ydl_base_opts()
+    opts.update({
+        'format'         : 'bestaudio/best',
+        'outtmpl'        : out_tmpl,
+        'postprocessors' : [{
+            'key'             : 'FFmpegExtractAudio',
+            'preferredcodec'  : 'mp3',
+            'preferredquality': '192',
+        }],
+    })
     try:
-        opts = get_ydl_base_opts()
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(youtube_url, download=False)
-            if not info:
-                return None
-
-            formats = info.get('formats', [])
-
-            # 1. Pure audio formats (no video)
-            audio_only = [
-                f for f in formats
-                if f.get('acodec') not in ('none', None)
-                and f.get('vcodec') in ('none', None)
-                and f.get('url')
-            ]
-            if audio_only:
-                best = sorted(audio_only, key=lambda x: x.get('abr') or 0, reverse=True)
-                return best[0]['url']
-
-            # 2. Any format with audio
-            with_audio = [
-                f for f in formats
-                if f.get('acodec') not in ('none', None)
-                and f.get('url')
-            ]
-            if with_audio:
-                return with_audio[-1]['url']
-
-            # 3. Last resort — any URL
-            for f in reversed(formats):
-                if f.get('url'):
-                    return f['url']
-
-            return None
+            ydl.download([youtube_url])
+        mp3_path = os.path.join(TMP_DIR, f"{uid}.mp3")
+        if os.path.exists(mp3_path):
+            return mp3_path
+        for f in os.listdir(TMP_DIR):
+            if f.startswith(uid):
+                return os.path.join(TMP_DIR, f)
+        return None
     except Exception as e:
-        logger.error(f"Audio URL error: {e}")
+        logger.error(f"Download error: {e}")
         return None
 
 def get_song_info(url: str) -> dict:
-    """Get song metadata."""
     try:
         opts = get_ydl_base_opts()
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
             return {
-                'title': info.get('title', 'Unknown'),
+                'title'   : info.get('title',    'Unknown'),
                 'duration': info.get('duration', 0),
-                'url': url,
-                'thumbnail': info.get('thumbnail', ''),
                 'uploader': info.get('uploader', 'Unknown'),
+                'url'     : url,
             }
     except Exception as e:
         logger.error(f"Info error: {e}")
-        return {'title': 'Unknown', 'duration': 0, 'url': url}
+        return {'title': 'Unknown', 'duration': 0, 'uploader': 'Unknown', 'url': url}
 
-async def play_in_voice_chat(chat_id: int, audio_url: str, title: str):
+async def play_in_voice_chat(chat_id: int, file_path: str, title: str):
     try:
         try:
             await call.leave_group_call(chat_id)
         except Exception:
             pass
-        await call.play(chat_id, MediaStream(audio_url))
+        await call.play(chat_id, MediaStream(file_path))
         if chat_id not in active_chats:
-            active_chats[chat_id] = {'queue': [], 'current': None, 'playing': False}
-        active_chats[chat_id]['current'] = {'title': title, 'url': audio_url}
-        active_chats[chat_id]['playing'] = True
-        logger.info(f"✅ Playing in chat {chat_id}: {title}")
+            active_chats[chat_id] = {'queue': [], 'current': None,
+                                     'playing': False, 'temp_file': None}
+        delete_temp(active_chats[chat_id].get('temp_file'))
+        active_chats[chat_id]['current']   = {'title': title, 'path': file_path}
+        active_chats[chat_id]['playing']   = True
+        active_chats[chat_id]['temp_file'] = file_path
+        logger.info(f"▶️ Playing {title} in {chat_id}")
         return True
     except Exception as e:
         logger.error(f"Play error: {e}")
+        delete_temp(file_path)
         return False
 
 async def stop_voice_chat(chat_id: int):
     try:
         await call.leave_group_call(chat_id)
-        if chat_id in active_chats:
-            active_chats[chat_id]['playing'] = False
-            active_chats[chat_id]['current'] = None
-            active_chats[chat_id]['queue'] = []
-        logger.info(f"🛑 Stopped in chat {chat_id}")
-        return True
-    except Exception as e:
-        logger.error(f"Stop error: {e}")
-        return False
+    except Exception:
+        pass
+    if chat_id in active_chats:
+        delete_temp(active_chats[chat_id].get('temp_file'))
+        active_chats[chat_id] = {'queue': [], 'current': None,
+                                 'playing': False, 'temp_file': None}
+    return True
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not is_authorized_user(user_id):
-        await update.message.reply_text("❌ **Unauthorized User!**\n\nThis bot is for authorized users only.")
+    if not is_authorized_user(update.effective_user.id):
+        await update.message.reply_text("❌ Unauthorized!")
         return
-    text = """
-🎵 **Private Music Bot**
-
-**Commands:**
-/play <song> - Play a song
-/stop - Stop and leave
-/queue - Show queue
-/current - Show current song
-/help - Show this message
-/authcheck - Check authorization status
-
-🔒 **Private Bot**
-- Only authorized users can use
-- Only authorized groups
-"""
-    await update.message.reply_text(text)
+    await update.message.reply_text(
+        "🎵 *BURHAN MUSIC BOT*\n\n"
+        "/play <song> — गाना बजाओ\n"
+        "/stop — रोको\n"
+        "/current — अभी क्या बज रहा है\n"
+        "/queue — queue देखो\n"
+        "/authcheck — authorization check\n"
+        "/help — help",
+        parse_mode='Markdown'
+    )
 
 async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth, reason = is_authorized(update)
     if not auth:
-        if reason == "user":
-            await update.message.reply_text("❌ **Unauthorized User!**\n\nContact the bot owner for access.")
-        elif reason == "group":
-            await update.message.reply_text("❌ **Unauthorized Group!**\n\nThis bot is only allowed in authorized groups.")
+        msg = "❌ Unauthorized User!" if reason == "user" else "❌ Unauthorized Group!"
+        await update.message.reply_text(msg)
         return
     if not context.args:
-        await update.message.reply_text("❌ Usage: /play <song_name>")
+        await update.message.reply_text("❌ Usage: /play <song name>")
         return
-    query = ' '.join(context.args)
+    query   = ' '.join(context.args)
     chat_id = update.effective_chat.id
-    msg = await update.message.reply_text(f"🔍 Searching: `{query}`...")
+    msg     = await update.message.reply_text(f"🔍 Searching: *{query}*...", parse_mode='Markdown')
     try:
         song_url = search_youtube(query)
         if not song_url:
             await msg.edit_text("❌ No results found!")
             return
-        info = get_song_info(song_url)
-        title = info.get('title', 'Unknown')
-        duration = info.get('duration', 0)
-        duration_str = f"{duration//60}:{duration%60:02d}" if duration else "Live"
-        audio_url = get_audio_url(song_url)
-        if not audio_url:
-            await msg.edit_text("❌ Could not get audio stream!")
+        info     = get_song_info(song_url)
+        title    = info['title']
+        dur      = info['duration']
+        dur_str  = f"{dur//60}:{dur%60:02d}" if dur else "?"
+        uploader = info['uploader']
+        await msg.edit_text(
+            f"⬇️ *Downloading:* {title}\n⏱️ {dur_str} | 📺 {uploader}",
+            parse_mode='Markdown'
+        )
+        file_path = await asyncio.get_event_loop().run_in_executor(
+            None, download_audio, song_url
+        )
+        if not file_path:
+            await msg.edit_text("❌ Could not download audio!")
             return
-        keyboard = [[InlineKeyboardButton("⏹️ Stop", callback_data="stop")]]
+        keyboard     = [[InlineKeyboardButton("⏹️ Stop", callback_data="stop")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await msg.edit_text(
-            f"▶️ **Now Playing:**\n🎵 {title}\n⏱️ {duration_str}\n📺 {info.get('uploader', 'Unknown')}",
+            f"▶️ *Now Playing:*\n🎵 {title}\n⏱️ {dur_str} | 📺 {uploader}",
+            parse_mode='Markdown',
             reply_markup=reply_markup
         )
-        success = await play_in_voice_chat(chat_id, audio_url, title)
+        success = await play_in_voice_chat(chat_id, file_path, title)
         if not success:
-            await msg.edit_text("❌ Failed to join voice chat! Make sure bot has permissions.")
+            await msg.edit_text("❌ Failed to join voice chat!\nBot को admin बनाओ और voice chat खुला रखो।")
     except Exception as e:
         logger.error(f"play_command error: {e}")
-        await msg.edit_text(f"❌ Error: {str(e)}")
+        await msg.edit_text(f"❌ Error: {e}")
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    auth, reason = is_authorized(update)
+    auth, _ = is_authorized(update)
     if not auth:
         await update.message.reply_text("❌ Unauthorized!")
         return
-    chat_id = update.effective_chat.id
-    success = await stop_voice_chat(chat_id)
-    if success:
-        await update.message.reply_text("⏹️ Stopped playing and left voice chat!")
-    else:
-        await update.message.reply_text("❌ Failed to stop!")
+    await stop_voice_chat(update.effective_chat.id)
+    await update.message.reply_text("⏹️ Stopped!")
 
 async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    auth, reason = is_authorized(update)
+    auth, _ = is_authorized(update)
     if not auth:
         await update.message.reply_text("❌ Unauthorized!")
         return
     chat_id = update.effective_chat.id
-    if chat_id not in active_chats or not active_chats[chat_id]['queue']:
+    q = active_chats.get(chat_id, {}).get('queue', [])
+    if not q:
         await update.message.reply_text("📭 Queue is empty!")
         return
-    queue = active_chats[chat_id]['queue']
-    text = "📋 **Current Queue:**\n\n"
-    for i, song in enumerate(queue, 1):
-        text += f"{i}. {song.get('title', 'Unknown')}\n"
-    await update.message.reply_text(text)
+    text = "📋 *Queue:*\n" + "\n".join(f"{i+1}. {s['title']}" for i, s in enumerate(q))
+    await update.message.reply_text(text, parse_mode='Markdown')
 
 async def current_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    auth, reason = is_authorized(update)
+    auth, _ = is_authorized(update)
     if not auth:
         await update.message.reply_text("❌ Unauthorized!")
         return
     chat_id = update.effective_chat.id
-    if chat_id not in active_chats or not active_chats[chat_id]['current']:
-        await update.message.reply_text("❌ Nothing is playing right now!")
+    cur = active_chats.get(chat_id, {}).get('current')
+    if not cur:
+        await update.message.reply_text("❌ Nothing playing!")
         return
-    current = active_chats[chat_id]['current']
-    await update.message.reply_text(f"▶️ **Now Playing:**\n🎵 {current.get('title', 'Unknown')}")
-
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    auth, reason = is_authorized(update)
-    if not auth:
-        await query.edit_message_text("❌ Unauthorized!")
-        return
-    chat_id = update.effective_chat.id
-    if query.data == "stop":
-        await stop_voice_chat(chat_id)
-        await query.edit_message_text("⏹️ Stopped!")
+    await update.message.reply_text(f"▶️ *Now Playing:*\n🎵 {cur['title']}", parse_mode='Markdown')
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    auth, reason = is_authorized(update)
+    auth, _ = is_authorized(update)
     if not auth:
         await update.message.reply_text("❌ Unauthorized!")
         return
-    text = """
-🎵 **Private Music Bot Commands:**
-
-/play <song> - Play a song
-/stop - Stop and leave
-/queue - Show queue
-/current - Show current song
-/authcheck - Check authorization status
-/help - Show this message
-
-🔒 **Private Bot**
-• Only authorized groups
-• Only authorized users
-"""
-    await update.message.reply_text(text)
+    await update.message.reply_text(
+        "🎵 *BURHAN MUSIC — Commands:*\n\n"
+        "/play <song> — गाना बजाओ\n"
+        "/stop — रोको\n"
+        "/current — अभी क्या बज रहा है\n"
+        "/queue — queue देखो\n"
+        "/authcheck — authorization check",
+        parse_mode='Markdown'
+    )
 
 async def authcheck_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    user_status = "✅ Authorized" if is_authorized_user(user_id) else "❌ Unauthorized"
-    group_status = "✅ Authorized" if is_authorized_group(chat_id) else "❌ Unauthorized"
-    text = f"""
-🔒 **Authorization Status:**
+    uid = update.effective_user.id
+    cid = update.effective_chat.id
+    await update.message.reply_text(
+        f"🔒 *Authorization Status*\n\n"
+        f"👤 User:  {'✅' if is_authorized_user(uid) else '❌'}\n"
+        f"💬 Group: {'✅' if is_authorized_group(cid) else '❌'}",
+        parse_mode='Markdown'
+    )
 
-👤 **User:** {user_status}
-💬 **Group:** {group_status}
-
-**Authorized Users:** {len(AUTHORIZED_USERS)} users
-**Authorized Groups:** {len(AUTHORIZED_GROUPS)} groups
-"""
-    await update.message.reply_text(text)
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    auth, _ = is_authorized(update)
+    if not auth:
+        await q.edit_message_text("❌ Unauthorized!")
+        return
+    if q.data == "stop":
+        await stop_voice_chat(update.effective_chat.id)
+        await q.edit_message_text("⏹️ Stopped!")
 
 async def main():
     global app, call
-    app = Client(
-        "music_bot",
-        api_id=API_ID,
-        api_hash=API_HASH,
-        session_string=SESSION_STRING
-    )
+    app  = Client("music_bot", api_id=API_ID, api_hash=API_HASH,
+                  session_string=SESSION_STRING)
     call = PyTgCalls(app)
     await app.start()
     await call.start()
     application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("play", play_command))
-    application.add_handler(CommandHandler("stop", stop_command))
-    application.add_handler(CommandHandler("queue", queue_command))
-    application.add_handler(CommandHandler("current", current_command))
-    application.add_handler(CommandHandler("authcheck", authcheck_command))
+    for cmd, handler in [
+        ("start",     start),
+        ("help",      help_command),
+        ("play",      play_command),
+        ("stop",      stop_command),
+        ("queue",     queue_command),
+        ("current",   current_command),
+        ("authcheck", authcheck_command),
+    ]:
+        application.add_handler(CommandHandler(cmd, handler))
     application.add_handler(CallbackQueryHandler(callback_handler))
     print("=" * 50)
-    print("🎵 PRIVATE MUSIC BOT STARTED")
+    print("🎵  BURHAN MUSIC BOT — STARTED")
     print("=" * 50)
     await application.initialize()
     await application.start()
