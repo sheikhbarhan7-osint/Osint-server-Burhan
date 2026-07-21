@@ -427,5 +427,28 @@ async def main():
     
     await application.run_polling()
 
+# ============================================
+# 🌐 KEEP ALIVE SERVER FOR RAILWAY (ADD THIS AT THE BOTTOM)
+# ============================================
+from flask import Flask
+from threading import Thread
+
+railway_app = Flask('')
+
+@railway_app.route('/')
+def home():
+    return "Bot is running!"
+
+def run_flask():
+    railway_app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.start()
+
+# ============================================
+# 🚀 MAIN FUNCTION
+# ============================================
 if __name__ == "__main__":
-    asyncio.run(main())
+    keep_alive()  # 👈 Pehle Flask server start karo
+    asyncio.run(main())  # 👈 Phir bot start karo
