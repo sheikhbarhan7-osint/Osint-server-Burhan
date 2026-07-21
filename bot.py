@@ -8,9 +8,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQuer
 
 # Voice chat libraries
 from pyrogram import Client
-from pytgcalls import PyTgCalls, StreamType
-from pytgcalls.types import Stream
-from pytgcalls.types.input_stream import InputAudioStream
+from pytgcalls import PyTgCalls
+from pytgcalls.types import MediaStream
 
 import yt_dlp
 
@@ -164,15 +163,12 @@ async def play_in_voice_chat(chat_id: int, audio_url: str, title: str):
     """Play audio in voice chat."""
     try:
         try:
-            await call.leave_call(chat_id)
-        except:
+            await call.leave_group_call(chat_id)
+        except Exception:
             pass
-        await call.join_call(
+        await call.play(
             chat_id,
-            stream=Stream(
-                InputAudioStream(audio_url),
-                stream_type=StreamType.LOCAL_STREAM,
-            ),
+            MediaStream(audio_url),
         )
         if chat_id not in active_chats:
             active_chats[chat_id] = {'queue': [], 'current': None, 'playing': False}
@@ -187,7 +183,7 @@ async def play_in_voice_chat(chat_id: int, audio_url: str, title: str):
 async def stop_voice_chat(chat_id: int):
     """Stop playing and leave voice chat."""
     try:
-        await call.leave_call(chat_id)
+        await call.leave_group_call(chat_id)
         if chat_id in active_chats:
             active_chats[chat_id]['playing'] = False
             active_chats[chat_id]['current'] = None
