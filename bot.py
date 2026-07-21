@@ -9,12 +9,11 @@ from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQuer
 
 from pyrogram import Client
 import pyrogram.errors as _pyro_errors
-if not hasattr(_pyro_errors, 'GroupCallForbidden'):
-    if hasattr(_pyro_errors, 'GroupcallForbidden'):
-        _pyro_errors.GroupCallForbidden = _pyro_errors.GroupcallForbidden
-    else:
-        class _GCF(Exception): pass
-        _pyro_errors.GroupCallForbidden = _GCF
+for _n in ['GroupCallForbidden', 'GroupcallForbidden']:
+    if not hasattr(_pyro_errors, _n):
+        class _E(Exception): pass
+        _E.__name__ = _n
+        setattr(_pyro_errors, _n, _E)
 
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
