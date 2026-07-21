@@ -49,15 +49,12 @@ logger = logging.getLogger(__name__)
 
 # ============================================
 # Pyrogram Client + PyTgCalls
+# (ye ab main() ke andar banaye jaate hain, taaki
+#  sahi event loop se attach ho — warna "attached to
+#  a different loop" wali error aati hai)
 # ============================================
-app = Client(
-    "music_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    session_string=SESSION_STRING
-)
-
-call = PyTgCalls(app)
+app: Client = None
+call: PyTgCalls = None
 
 # Active voice chats
 active_chats = {}
@@ -400,6 +397,18 @@ async def authcheck_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     """Start the bot."""
+    global app, call
+
+    # Client/PyTgCalls yahin banate hain, kyunki ab
+    # asyncio.run() ka event loop chalu ho chuka hai
+    app = Client(
+        "music_bot",
+        api_id=API_ID,
+        api_hash=API_HASH,
+        session_string=SESSION_STRING
+    )
+    call = PyTgCalls(app)
+
     await app.start()
     await call.start()
     
