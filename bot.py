@@ -6,59 +6,38 @@ from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 
-# Voice chat libraries
 from pyrogram import Client
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
 
 import yt_dlp
 
-# ============================================
-# 🔒 CONFIGURATION - ENVIRONMENT VARIABLES
-# ============================================
-
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 API_ID = int(os.environ.get('API_ID', 0))
 API_HASH = os.environ.get('API_HASH')
 SESSION_STRING = os.environ.get('SESSION_STRING')
 
-# ============================================
-# 🔒 AUTHORIZED USERS - HARDCODED (OWNER + ADMIN)
-# ============================================
 AUTHORIZED_USERS = [
-    5804726533,  # 🔴 OWNER (Aap)
-    2062068620,  # 🔴 ADMIN (Doosra user)
+    5804726533,
+    2062068620,
 ]
 
-# ============================================
-# 🔒 AUTHORIZED GROUPS - SIRF 2 GROUPS
-# ============================================
 AUTHORIZED_GROUPS = [
-    -1001234567890,  # 🔴 GROUP 1 KA ID (CHANGE KAREIN)
-    -1009876543210,  # 🔴 GROUP 2 KA ID (CHANGE KAREIN)
+    -1001234567890,
+    -1009876543210,
 ]
 
-# ============================================
-# LOGGING
-# ============================================
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ============================================
-# Pyrogram Client + PyTgCalls
-# ============================================
 app: Client = None
 call: PyTgCalls = None
-
-# Active voice chats
 active_chats = {}
 
-# ============================================
-# 🔒 AUTHORIZATION CHECK - USER + GROUP
-# ============================================
+COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
 
 def is_authorized_user(user_id: int) -> bool:
     return user_id in AUTHORIZED_USERS
@@ -76,22 +55,13 @@ def is_authorized(update: Update) -> tuple:
             return False, "group"
     return True, "ok"
 
-# ============================================
-# YOUTUBE FUNCTIONS
-# ============================================
-
-# ✅ Cookies file path — bot.py ke saath cookies.txt rakho
-COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
-
 def get_audio_url(youtube_url: str) -> Optional[str]:
-    """Get direct audio stream URL from YouTube."""
     try:
         ydl_opts = {
-            'format': 'bestaudio/best',
+            'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
             'quiet': True,
             'no_warnings': True,
-            'extractaudio': True,
-            'cookiefile': COOKIES_FILE,  # ✅ COOKIES ADDED
+            'cookiefile': COOKIES_FILE,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
@@ -101,20 +71,21 @@ def get_audio_url(youtube_url: str) -> Optional[str]:
             for fmt in formats:
                 if fmt.get('acodec') != 'none' and fmt.get('vcodec') == 'none':
                     return fmt.get('url')
+            if formats:
+                return formats[-1].get('url')
             return None
     except Exception as e:
         logger.error(f"Audio URL error: {e}")
         return None
 
 def search_youtube(query: str) -> Optional[str]:
-    """Search YouTube and return first result URL."""
     try:
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'extract_flat': True,
             'default_search': 'ytsearch',
-            'cookiefile': COOKIES_FILE,  # ✅ COOKIES ADDED
+            'cookiefile': COOKIES_FILE,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             search_results = ydl.extract_info(f"ytsearch:{query}", download=False)
@@ -130,9 +101,8 @@ def search_youtube(query: str) -> Optional[str]:
         return None
 
 def get_song_info(url: str) -> dict:
-    """Get song metadata."""
     try:
-        ydl_opts = {'quiet': True, 'no_warnings': True, 'cookiefile': COOKIES_FILE}  # ✅ COOKIES ADDED
+        ydl_opts = {'quiet': True, 'no_warnings': True, 'cookiefile': COOKIES_FILE}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             return {
@@ -146,12 +116,7 @@ def get_song_info(url: str) -> dict:
         logger.error(f"Info error: {e}")
         return {'title': 'Unknown', 'duration': 0, 'url': url}
 
-# ============================================
-# VOICE CHAT FUNCTIONS
-# ============================================
-
 async def play_in_voice_chat(chat_id: int, audio_url: str, title: str):
-    """Play audio in voice chat."""
     try:
         try:
             await call.leave_group_call(chat_id)
@@ -169,7 +134,6 @@ async def play_in_voice_chat(chat_id: int, audio_url: str, title: str):
         return False
 
 async def stop_voice_chat(chat_id: int):
-    """Stop playing and leave voice chat."""
     try:
         await call.leave_group_call(chat_id)
         if chat_id in active_chats:
@@ -182,14 +146,10 @@ async def stop_voice_chat(chat_id: int):
         logger.error(f"Stop error: {e}")
         return False
 
-# ============================================
-# BOT COMMANDS
-# ============================================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_authorized_user(user_id):
-        await update.message.reply_text("❌ **Unauthorized User!**\n\nThis bot is for authorized users only.\nContact the bot owner for access.")
+        await update.message.reply_text("❌ **Unauthorized User!**\n\nThis bot is for authorized users only.")
         return
     text = """
 🎵 **Private Music Bot**
@@ -212,7 +172,7 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth, reason = is_authorized(update)
     if not auth:
         if reason == "user":
-            await update.message.reply_text("❌ **Unauthorized User!**\n\nYou are not authorized to use this bot.\nContact the bot owner for access.")
+            await update.message.reply_text("❌ **Unauthorized User!**\n\nContact the bot owner for access.")
         elif reason == "group":
             await update.message.reply_text("❌ **Unauthorized Group!**\n\nThis bot is only allowed in authorized groups.")
         return
@@ -335,10 +295,6 @@ async def authcheck_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
     await update.message.reply_text(text)
 
-# ============================================
-# MAIN FUNCTION
-# ============================================
-
 async def main():
     global app, call
     app = Client(
@@ -361,9 +317,6 @@ async def main():
     application.add_handler(CallbackQueryHandler(callback_handler))
     print("=" * 50)
     print("🎵 PRIVATE MUSIC BOT STARTED")
-    print("=" * 50)
-    print(f"✅ Authorized Users: {AUTHORIZED_USERS}")
-    print(f"✅ Authorized Groups: {AUTHORIZED_GROUPS}")
     print("=" * 50)
     await application.initialize()
     await application.start()
