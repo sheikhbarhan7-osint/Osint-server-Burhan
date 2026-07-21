@@ -9,7 +9,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQuer
 
 from pyrogram import Client
 from pytgcalls import PyTgCalls
-from pytgcalls.types import MediaStream
+from pytgcalls.types.input_stream import AudioPiped
 
 import yt_dlp
 
@@ -69,7 +69,7 @@ def get_ydl_base_opts() -> dict:
         opts['cookiefile'] = COOKIES_FILE
     return opts
 
-def delete_temp(path: Optional[str]):
+def delete_temp(path):
     try:
         if path and os.path.exists(path):
             os.remove(path)
@@ -77,7 +77,7 @@ def delete_temp(path: Optional[str]):
     except Exception:
         pass
 
-def search_youtube(query: str) -> Optional[str]:
+def search_youtube(query: str):
     try:
         opts = get_ydl_base_opts()
         opts['extract_flat'] = True
@@ -92,7 +92,7 @@ def search_youtube(query: str) -> Optional[str]:
         logger.error(f"Search error: {e}")
         return None
 
-def download_audio(youtube_url: str) -> Optional[str]:
+def download_audio(youtube_url: str):
     uid      = uuid.uuid4().hex
     out_tmpl = os.path.join(TMP_DIR, f"{uid}.%(ext)s")
     opts = get_ydl_base_opts()
@@ -140,7 +140,7 @@ async def play_in_voice_chat(chat_id: int, file_path: str, title: str):
             await call.leave_group_call(chat_id)
         except Exception:
             pass
-        await call.play(chat_id, MediaStream(file_path))
+        await call.join_group_call(chat_id, AudioPiped(file_path))
         if chat_id not in active_chats:
             active_chats[chat_id] = {'queue': [], 'current': None,
                                      'playing': False, 'temp_file': None}
