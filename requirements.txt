@@ -1,5 +1,8 @@
-python-telegram-bot==20.7
 pyrogram==2.0.106
-pytgcalls
-yt-dlp
 TgCrypto
+py-tgcalls==0.9.1
+pygcalls==2.1.0
+yt-dlp
+httpx==0.25.2
+pysocks==1.7.1
+pyaes==1.6.1
