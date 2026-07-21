@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import uuid
+import requests
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -75,110 +76,179 @@ def delete_temp(path: Optional[str]):
     except Exception:
         pass
 
-def search_youtube(query: str) -> Optional[dict]:
-    search_opts = {
+# ─── SOURCE 1: JioSaavn ────────────────────────────────────────────────────
+def search_jiosaavn(query: str) -> Optional[dict]:
+    try:
+        url  = f"https://saavn.dev/api/search/songs?query={requests.utils.quote(query)}&limit=5"
+        resp = requests.get(url, timeout=15)
+        data = resp.json()
+        if not data.get('success'):
+            return None
+        results = data.get('data', {}).get('results', [])
+        if not results:
+            return None
+        song = results[0]
+        download_urls = song.get('downloadUrl', [])
+        best_url = None
+        for item in reversed(download_urls):
+            if item.get('url'):
+                best_url = item['url']
+                break
+        if not best_url:
+            return None
+        return {
+            'title'      : song.get('name', 'Unknown'),
+            'duration'   : int(song.get('duration', 0)),
+            'uploader'   : song.get('primaryArtists', 'Unknown'),
+            'direct_url' : best_url,
+            'source'     : 'jiosaavn',
+        }
+    except Exception as e:
+        logger.warning(f"JioSaavn search error: {e}")
+        return None
+
+def download_from_jiosaavn(info: dict) -> Optional[str]:
+    try:
+        uid      = uuid.uuid4().hex
+        mp3_path = os.path.join(TMP_DIR, f"{uid}.mp3")
+        resp = requests.get(info['direct_url'], timeout=60, stream=True)
+        resp.raise_for_status()
+        with open(mp3_path, 'wb') as f:
+            for chunk in resp.iter_content(chunk_size=65536):
+                if chunk:
+                    f.write(chunk)
+        if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 10000:
+            logger.info(f"JioSaavn download OK: {mp3_path}")
+            return mp3_path
+        delete_temp(mp3_path)
+        return None
+    except Exception as e:
+        logger.warning(f"JioSaavn download error: {e}")
+        return None
+
+# ─── SOURCE 2: SoundCloud ─────────────────────────────────────────────────
+def search_and_download_soundcloud(query: str) -> Optional[dict]:
+    uid      = uuid.uuid4().hex
+    out_tmpl = os.path.join(TMP_DIR, f"{uid}.%(ext)s")
+    opts = {
         'quiet'          : True,
         'no_warnings'    : True,
         'nocheckcertificate': True,
-        'extract_flat'   : 'in_playlist',
-        'skip_download'  : True,
-        'socket_timeout' : 20,
-        'retries'        : 5,
-        'http_headers'   : {
-            'User-Agent': (
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/120.0.0.0 Safari/537.36'
-            ),
-        },
+        'format'         : 'bestaudio/best',
+        'outtmpl'        : out_tmpl,
+        'socket_timeout' : 30,
+        'retries'        : 3,
+        'postprocessors' : [{
+            'key'             : 'FFmpegExtractAudio',
+            'preferredcodec'  : 'mp3',
+            'preferredquality': '128',
+        }],
+        'default_search' : 'scsearch',
     }
-    if os.path.exists(COOKIES_FILE):
-        search_opts['cookiefile'] = COOKIES_FILE
-
-    queries_to_try = [
-        f"ytsearch5:{query}",
-        f"ytsearch5:{query} song",
-        f"ytsearch5:{query} audio",
-    ]
-
-    for search_query in queries_to_try:
-        try:
-            with yt_dlp.YoutubeDL(search_opts) as ydl:
-                results = ydl.extract_info(search_query, download=False)
-                if results and 'entries' in results:
-                    for entry in results['entries']:
-                        if entry and entry.get('id'):
-                            return {
-                                'url'     : f"https://www.youtube.com/watch?v={entry['id']}",
-                                'title'   : entry.get('title', 'Unknown'),
-                                'duration': entry.get('duration', 0),
-                                'uploader': entry.get('uploader', 'Unknown'),
-                            }
-        except Exception as e:
-            logger.warning(f"Search failed '{search_query}': {e}")
-            continue
-
-    logger.error(f"All searches failed for: {query}")
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"scsearch1:{query}", download=True)
+            if info and 'entries' in info:
+                info = info['entries'][0]
+        mp3_path = os.path.join(TMP_DIR, f"{uid}.mp3")
+        if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 10000:
+            logger.info(f"SoundCloud download OK")
+            return {
+                'file'    : mp3_path,
+                'title'   : info.get('title', 'Unknown'),
+                'duration': int(info.get('duration', 0)),
+                'uploader': info.get('uploader', 'SoundCloud'),
+            }
+        for f in os.listdir(TMP_DIR):
+            if f.startswith(uid):
+                fpath = os.path.join(TMP_DIR, f)
+                if os.path.getsize(fpath) > 10000:
+                    return {
+                        'file'    : fpath,
+                        'title'   : info.get('title', 'Unknown') if info else 'Unknown',
+                        'duration': 0,
+                        'uploader': 'SoundCloud',
+                    }
+    except Exception as e:
+        logger.warning(f"SoundCloud error: {e}")
     return None
 
-def download_audio(youtube_url: str) -> Optional[str]:
+# ─── SOURCE 3: YouTube (last resort) ──────────────────────────────────────
+def search_and_download_youtube(query: str) -> Optional[dict]:
     uid      = uuid.uuid4().hex
     out_tmpl = os.path.join(TMP_DIR, f"{uid}.%(ext)s")
-
-    clients_to_try = [
-        {'player_client': ['android_creator']},
-        {'player_client': ['android_testsuite']},
-        {'player_client': ['android']},
-        {'player_client': ['mweb']},
-        {},
-    ]
-
-    for client_args in clients_to_try:
+    for player in [['android_creator'], ['android_testsuite'], ['android'], []]:
         opts = {
             'quiet'          : True,
             'no_warnings'    : True,
             'nocheckcertificate': True,
-            'geo_bypass'     : True,
-            'socket_timeout' : 30,
-            'retries'        : 3,
             'format'         : 'bestaudio/best',
             'outtmpl'        : out_tmpl,
+            'socket_timeout' : 30,
+            'retries'        : 3,
             'postprocessors' : [{
                 'key'             : 'FFmpegExtractAudio',
                 'preferredcodec'  : 'mp3',
                 'preferredquality': '128',
             }],
+            'default_search' : 'ytsearch',
         }
-        if client_args:
-            opts['extractor_args'] = {'youtube': client_args}
+        if player:
+            opts['extractor_args'] = {'youtube': {'player_client': player}}
         if os.path.exists(COOKIES_FILE):
             opts['cookiefile'] = COOKIES_FILE
-
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([youtube_url])
-
+                info = ydl.extract_info(f"ytsearch1:{query}", download=True)
+                if info and 'entries' in info:
+                    info = info['entries'][0]
             mp3_path = os.path.join(TMP_DIR, f"{uid}.mp3")
-            if os.path.exists(mp3_path):
-                logger.info(f"Downloaded OK with {client_args}")
-                return mp3_path
-            for f in os.listdir(TMP_DIR):
-                if f.startswith(uid):
-                    return os.path.join(TMP_DIR, f)
+            if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 10000:
+                logger.info(f"YouTube download OK with {player}")
+                return {
+                    'file'    : mp3_path,
+                    'title'   : info.get('title', 'Unknown') if info else 'Unknown',
+                    'duration': int(info.get('duration', 0)) if info else 0,
+                    'uploader': info.get('uploader', 'YouTube') if info else 'YouTube',
+                }
         except Exception as e:
-            logger.warning(f"Download failed with {client_args}: {e}")
-            # clean partial files
+            logger.warning(f"YouTube error with {player}: {e}")
             for f in os.listdir(TMP_DIR):
                 if f.startswith(uid):
-                    try:
-                        os.remove(os.path.join(TMP_DIR, f))
-                    except Exception:
-                        pass
-            continue
-
-    logger.error("All download attempts failed")
+                    try: os.remove(os.path.join(TMP_DIR, f))
+                    except: pass
     return None
 
+# ─── MAIN SEARCH + DOWNLOAD ───────────────────────────────────────────────
+def search_and_download(query: str) -> Optional[dict]:
+    # 1. JioSaavn
+    logger.info(f"Trying JioSaavn for: {query}")
+    info = search_jiosaavn(query)
+    if info:
+        file_path = download_from_jiosaavn(info)
+        if file_path:
+            return {
+                'file'    : file_path,
+                'title'   : info['title'],
+                'duration': info['duration'],
+                'uploader': info['uploader'],
+            }
+
+    # 2. SoundCloud
+    logger.info(f"Trying SoundCloud for: {query}")
+    result = search_and_download_soundcloud(query)
+    if result:
+        return result
+
+    # 3. YouTube
+    logger.info(f"Trying YouTube for: {query}")
+    result = search_and_download_youtube(query)
+    if result:
+        return result
+
+    return None
+
+# ─── VOICE CHAT ───────────────────────────────────────────────────────────
 async def play_in_voice_chat(chat_id: int, file_path: str, title: str):
     try:
         try:
@@ -193,7 +263,7 @@ async def play_in_voice_chat(chat_id: int, file_path: str, title: str):
         active_chats[chat_id]['current']   = {'title': title, 'path': file_path}
         active_chats[chat_id]['playing']   = True
         active_chats[chat_id]['temp_file'] = file_path
-        logger.info(f"Playing: {title} in {chat_id}")
+        logger.info(f"Playing: {title}")
         return True
     except Exception as e:
         logger.error(f"Play error: {e}")
@@ -209,14 +279,14 @@ async def stop_voice_chat(chat_id: int):
         delete_temp(active_chats[chat_id].get('temp_file'))
         active_chats[chat_id] = {'queue': [], 'current': None,
                                  'playing': False, 'temp_file': None}
-    return True
 
+# ─── COMMANDS ─────────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized_user(update.effective_user.id):
-        await update.message.reply_text("Unauthorized!")
+        await update.message.reply_text("❌ Unauthorized!")
         return
     await update.message.reply_text(
-        "*BURHAN MUSIC BOT*\n\n"
+        "*🎵 BURHAN MUSIC BOT*\n\n"
         "*Group mein:*\n"
         "/play <song> — Voice chat mein bajao\n"
         "/stop — Roko\n"
@@ -232,11 +302,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth, reason = is_authorized(update)
     if not auth:
-        msg = "Unauthorized User!" if reason == "user" else "Unauthorized Group!"
-        await update.message.reply_text(msg)
+        await update.message.reply_text(
+            "❌ Unauthorized User!" if reason == "user" else "❌ Unauthorized Group!"
+        )
         return
     if not context.args:
-        await update.message.reply_text("Usage: /play <song name>")
+        await update.message.reply_text("❌ Usage: /play <song name>")
         return
 
     query   = ' '.join(context.args)
@@ -247,51 +318,44 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔍 Searching: *{query}*...", parse_mode='Markdown'
     )
     try:
-        info = search_youtube(query)
-        if not info:
-            await msg.edit_text(
-                "❌ No results found!\nThoda aur specific naam likho."
-            )
-            return
-
-        title    = info['title']
-        dur      = info['duration']
-        dur_str  = f"{dur//60}:{dur%60:02d}" if dur else "?"
-        uploader = info['uploader']
-        song_url = info['url']
-
         await msg.edit_text(
-            f"⬇️ *Downloading:* {title}\n⏱ {dur_str} | 📺 {uploader}",
+            f"🔍 Searching & downloading: *{query}*...\n_(JioSaavn → SoundCloud → YouTube)_",
             parse_mode='Markdown'
         )
 
-        file_path = await asyncio.get_event_loop().run_in_executor(
-            None, download_audio, song_url
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, search_and_download, query
         )
-        if not file_path:
+
+        if not result:
             await msg.edit_text(
-                "❌ Download failed! YouTube block kar raha hai.\n"
-                "Thodi der baad try karo."
+                "❌ Koi bhi source se nahi mila!\n"
+                "Thoda aur specific naam likho."
             )
             return
 
+        file_path = result['file']
+        title     = result['title']
+        dur       = result['duration']
+        dur_str   = f"{dur//60}:{dur%60:02d}" if dur else "?"
+        uploader  = result['uploader']
+
         if private:
-            # DM mode — send as audio file
             await msg.edit_text(
-                f"✅ *Downloaded:* {title}\nBhej raha hoon...",
+                f"✅ *Downloaded:* {title}\n📤 Bhej raha hoon...",
                 parse_mode='Markdown'
             )
-            await update.message.reply_audio(
-                audio=open(file_path, 'rb'),
-                title=title,
-                performer=uploader,
-                duration=dur,
-                caption=f"🎵 {title}"
-            )
+            with open(file_path, 'rb') as audio_file:
+                await update.message.reply_audio(
+                    audio=audio_file,
+                    title=title,
+                    performer=uploader,
+                    duration=dur,
+                    caption=f"🎵 {title}"
+                )
             await msg.delete()
             delete_temp(file_path)
         else:
-            # Group mode — play in voice chat
             keyboard     = [[InlineKeyboardButton("⏹ Stop", callback_data="stop")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await msg.edit_text(
@@ -312,7 +376,7 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth, _ = is_authorized(update)
     if not auth:
-        await update.message.reply_text("Unauthorized!")
+        await update.message.reply_text("❌ Unauthorized!")
         return
     await stop_voice_chat(update.effective_chat.id)
     await update.message.reply_text("⏹ Stopped!")
@@ -320,7 +384,7 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth, _ = is_authorized(update)
     if not auth:
-        await update.message.reply_text("Unauthorized!")
+        await update.message.reply_text("❌ Unauthorized!")
         return
     chat_id = update.effective_chat.id
     q = active_chats.get(chat_id, {}).get('queue', [])
@@ -335,7 +399,7 @@ async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def current_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth, _ = is_authorized(update)
     if not auth:
-        await update.message.reply_text("Unauthorized!")
+        await update.message.reply_text("❌ Unauthorized!")
         return
     chat_id = update.effective_chat.id
     cur = active_chats.get(chat_id, {}).get('current')
@@ -349,17 +413,14 @@ async def current_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth, _ = is_authorized(update)
     if not auth:
-        await update.message.reply_text("Unauthorized!")
+        await update.message.reply_text("❌ Unauthorized!")
         return
     await update.message.reply_text(
-        "*BURHAN MUSIC — Commands:*\n\n"
-        "*Group mein:*\n"
-        "/play <song> — Voice chat mein bajao\n"
-        "/stop — Roko\n"
-        "/current — Kya baj raha hai\n"
-        "/queue — Queue dekho\n\n"
-        "*DM mein:*\n"
-        "/play <song> — MP3 file seedha bhejo\n\n"
+        "*🎵 BURHAN MUSIC — Commands:*\n\n"
+        "/play <song> — Gana bajao / download karo\n"
+        "/stop — Voice chat roko\n"
+        "/current — Abhi kya baj raha hai\n"
+        "/queue — Queue dekho\n"
         "/authcheck — Auth check",
         parse_mode='Markdown'
     )
@@ -379,7 +440,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     auth, _ = is_authorized(update)
     if not auth:
-        await q.edit_message_text("Unauthorized!")
+        await q.edit_message_text("❌ Unauthorized!")
         return
     if q.data == "stop":
         await stop_voice_chat(update.effective_chat.id)
