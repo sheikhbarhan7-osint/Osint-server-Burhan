@@ -26,8 +26,8 @@ SESSION_STRING = os.environ.get('SESSION_STRING')
 # 🔒 AUTHORIZED USERS - HARDCODED (OWNER + ADMIN)
 # ============================================
 AUTHORIZED_USERS = [
-    2062068620,  # 🔴 OWNER (Aap)
-    5804726533,  # 🔴 ADMIN (Doosra user)
+    5804726533,  # 🔴 OWNER (Aap)
+    2062068620,  # 🔴 ADMIN (Doosra user)
 ]
 
 # ============================================
