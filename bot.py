@@ -64,33 +64,6 @@ def is_authorized(update: Update) -> tuple:
             return False, "group"
     return True, "ok"
 
-def get_ydl_base_opts() -> dict:
-    opts = {
-        'quiet'          : True,
-        'no_warnings'    : True,
-        'nocheckcertificate': True,
-        'source_address' : '0.0.0.0',
-        'geo_bypass'     : True,
-        'extractor_args' : {
-            'youtube': {
-                'player_client': ['android_testsuite', 'android', 'web'],
-                'skip'         : ['hls', 'dash'],
-            }
-        },
-        'http_headers'   : {
-            'User-Agent': (
-                'com.google.android.youtube/17.31.35 '
-                '(Linux; U; Android 11) gzip'
-            ),
-        },
-        'socket_timeout' : 30,
-        'retries'        : 10,
-    }
-    if os.path.exists(COOKIES_FILE):
-        opts['cookiefile'] = COOKIES_FILE
-        logger.info("Using cookies file")
-    return opts
-
 def delete_temp(path: Optional[str]):
     try:
         if path and os.path.exists(path):
@@ -100,43 +73,97 @@ def delete_temp(path: Optional[str]):
         pass
 
 def search_youtube(query: str) -> Optional[str]:
-    try:
-        opts = get_ydl_base_opts()
-        opts['extract_flat'] = True
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            results = ydl.extract_info(f"ytsearch1:{query}", download=False)
-            if results and 'entries' in results and results['entries']:
-                vid_id = results['entries'][0].get('id')
-                if vid_id:
-                    return f"https://www.youtube.com/watch?v={vid_id}"
-        return None
-    except Exception as e:
-        logger.error(f"Search error: {e}")
-        return None
+    search_opts = {
+        'quiet'              : True,
+        'no_warnings'        : True,
+        'nocheckcertificate' : True,
+        'extract_flat'       : 'in_playlist',
+        'skip_download'      : True,
+        'socket_timeout'     : 20,
+        'retries'            : 5,
+        'http_headers'       : {
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/120.0.0.0 Safari/537.36'
+            ),
+        },
+    }
+    if os.path.exists(COOKIES_FILE):
+        search_opts['cookiefile'] = COOKIES_FILE
+
+    queries_to_try = [
+        f"ytsearch3:{query}",
+        f"ytsearch5:{query} song",
+        f"ytsearch3:{query} lyrics",
+    ]
+
+    for search_query in queries_to_try:
+        try:
+            with yt_dlp.YoutubeDL(search_opts) as ydl:
+                results = ydl.extract_info(search_query, download=False)
+                if results and 'entries' in results:
+                    for entry in results['entries']:
+                        if entry and entry.get('id'):
+                            url = f"https://www.youtube.com/watch?v={entry['id']}"
+                            logger.info(f"Found: {entry.get('title')} -> {url}")
+                            return url
+        except Exception as e:
+            logger.warning(f"Search failed for '{search_query}': {e}")
+            continue
+
+    logger.error(f"All search attempts failed for: {query}")
+    return None
 
 def download_audio(youtube_url: str) -> Optional[str]:
     uid      = uuid.uuid4().hex
     out_tmpl = os.path.join(TMP_DIR, f"{uid}.%(ext)s")
 
-    # Try android_testsuite first, then fallback
-    for player in [['android_testsuite'], ['android_creator'], ['android'], ['web']]:
-        opts = get_ydl_base_opts()
-        opts['extractor_args']['youtube']['player_client'] = player
-        opts.update({
-            'format'         : 'bestaudio[ext=m4a]/bestaudio/best',
-            'outtmpl'        : out_tmpl,
-            'postprocessors' : [{
+    player_clients = [
+        ['android_testsuite'],
+        ['android_creator'],
+        ['android'],
+        ['web'],
+    ]
+
+    for player in player_clients:
+        opts = {
+            'quiet'              : True,
+            'no_warnings'        : True,
+            'nocheckcertificate' : True,
+            'source_address'     : '0.0.0.0',
+            'geo_bypass'         : True,
+            'socket_timeout'     : 30,
+            'retries'            : 5,
+            'format'             : 'bestaudio[ext=m4a]/bestaudio/best',
+            'outtmpl'            : out_tmpl,
+            'postprocessors'     : [{
                 'key'             : 'FFmpegExtractAudio',
                 'preferredcodec'  : 'mp3',
                 'preferredquality': '128',
             }],
-        })
+            'extractor_args'     : {
+                'youtube': {
+                    'player_client': player,
+                }
+            },
+            'http_headers'       : {
+                'User-Agent': (
+                    'com.google.android.youtube/17.31.35 '
+                    '(Linux; U; Android 11) gzip'
+                ),
+            },
+        }
+        if os.path.exists(COOKIES_FILE):
+            opts['cookiefile'] = COOKIES_FILE
+
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([youtube_url])
+
             mp3_path = os.path.join(TMP_DIR, f"{uid}.mp3")
             if os.path.exists(mp3_path):
-                logger.info(f"Downloaded with client: {player}")
+                logger.info(f"Downloaded OK with {player}")
                 return mp3_path
             for f in os.listdir(TMP_DIR):
                 if f.startswith(uid):
@@ -150,7 +177,15 @@ def download_audio(youtube_url: str) -> Optional[str]:
 
 def get_song_info(url: str) -> dict:
     try:
-        opts = get_ydl_base_opts()
+        opts = {
+            'quiet'              : True,
+            'no_warnings'        : True,
+            'nocheckcertificate' : True,
+            'skip_download'      : True,
+            'socket_timeout'     : 20,
+        }
+        if os.path.exists(COOKIES_FILE):
+            opts['cookiefile'] = COOKIES_FILE
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
             return {
@@ -177,7 +212,7 @@ async def play_in_voice_chat(chat_id: int, file_path: str, title: str):
         active_chats[chat_id]['current']   = {'title': title, 'path': file_path}
         active_chats[chat_id]['playing']   = True
         active_chats[chat_id]['temp_file'] = file_path
-        logger.info(f"Playing {title} in {chat_id}")
+        logger.info(f"Playing: {title} in {chat_id}")
         return True
     except Exception as e:
         logger.error(f"Play error: {e}")
@@ -221,11 +256,13 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     query   = ' '.join(context.args)
     chat_id = update.effective_chat.id
-    msg     = await update.message.reply_text(f"Searching: *{query}*...", parse_mode='Markdown')
+    msg     = await update.message.reply_text(
+        f"Searching: *{query}*...", parse_mode='Markdown'
+    )
     try:
         song_url = search_youtube(query)
         if not song_url:
-            await msg.edit_text("No results found!")
+            await msg.edit_text("No results found! Thoda aur specific naam likho.")
             return
         info     = get_song_info(song_url)
         title    = info['title']
@@ -240,7 +277,7 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             None, download_audio, song_url
         )
         if not file_path:
-            await msg.edit_text("Could not download audio!")
+            await msg.edit_text("Could not download audio! Thodi der baad try karo.")
             return
         keyboard     = [[InlineKeyboardButton("Stop", callback_data="stop")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -251,7 +288,10 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         success = await play_in_voice_chat(chat_id, file_path, title)
         if not success:
-            await msg.edit_text("Failed to join voice chat! Bot ko admin banao aur voice chat khula rakho.")
+            await msg.edit_text(
+                "Voice chat join nahi hua!\n"
+                "Bot ko Admin banao aur Voice Chat khula rakho."
+            )
     except Exception as e:
         logger.error(f"play_command error: {e}")
         await msg.edit_text(f"Error: {e}")
@@ -287,7 +327,9 @@ async def current_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not cur:
         await update.message.reply_text("Nothing playing!")
         return
-    await update.message.reply_text(f"*Now Playing:*\n{cur['title']}", parse_mode='Markdown')
+    await update.message.reply_text(
+        f"*Now Playing:*\n{cur['title']}", parse_mode='Markdown'
+    )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth, _ = is_authorized(update)
