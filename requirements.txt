@@ -1,2 +1,0 @@
-telebot==0.0.5
-requests==2.31.0
