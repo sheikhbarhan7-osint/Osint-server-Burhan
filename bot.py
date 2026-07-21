@@ -420,8 +420,23 @@ async def main():
     print(f"✅ Authorized Users: {AUTHORIZED_USERS}")
     print(f"✅ Authorized Groups: {AUTHORIZED_GROUPS}")
     print("=" * 50)
-    
-    await application.run_polling()
+
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+
+    # Bot ko hamesha chalu rakhne ke liye
+    stop_event = asyncio.Event()
+    try:
+        await stop_event.wait()
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
+        await call.stop()
+        await app.stop()
 
 if __name__ == "__main__":
     asyncio.run(main())
