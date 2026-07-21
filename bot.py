@@ -24,7 +24,6 @@ AUTHORIZED_USERS = [
 
 AUTHORIZED_GROUPS = [
     -1001954191240,
-    -1009876543210,
 ]
 
 logging.basicConfig(
@@ -55,55 +54,85 @@ def is_authorized(update: Update) -> tuple:
             return False, "group"
     return True, "ok"
 
-def get_audio_url(youtube_url: str) -> Optional[str]:
+def get_ydl_base_opts() -> dict:
+    """Base yt-dlp options with cookies and network fixes."""
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'nocheckcertificate': True,
+        'source_address': '0.0.0.0',
+        'geo_bypass': True,
+    }
+    if os.path.exists(COOKIES_FILE):
+        opts['cookiefile'] = COOKIES_FILE
+    return opts
+
+def search_youtube(query: str) -> Optional[str]:
+    """Search YouTube and return first result URL."""
     try:
-        ydl_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
-            'cookiefile': COOKIES_FILE,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        opts = get_ydl_base_opts()
+        opts.update({
+            'extract_flat': True,
+            'default_search': 'ytsearch',
+        })
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            results = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            if results and 'entries' in results and results['entries']:
+                entry = results['entries'][0]
+                video_id = entry.get('id')
+                if video_id:
+                    return f"https://www.youtube.com/watch?v={video_id}"
+        return None
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        return None
+
+def get_audio_url(youtube_url: str) -> Optional[str]:
+    """Get best audio stream URL from YouTube."""
+    try:
+        opts = get_ydl_base_opts()
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
-            if info and 'url' in info:
-                return info['url']
+            if not info:
+                return None
+
             formats = info.get('formats', [])
-            for fmt in formats:
-                if fmt.get('acodec') != 'none' and fmt.get('vcodec') == 'none':
-                    return fmt.get('url')
-            if formats:
-                return formats[-1].get('url')
+
+            # 1. Pure audio formats (no video)
+            audio_only = [
+                f for f in formats
+                if f.get('acodec') not in ('none', None)
+                and f.get('vcodec') in ('none', None)
+                and f.get('url')
+            ]
+            if audio_only:
+                best = sorted(audio_only, key=lambda x: x.get('abr') or 0, reverse=True)
+                return best[0]['url']
+
+            # 2. Any format with audio
+            with_audio = [
+                f for f in formats
+                if f.get('acodec') not in ('none', None)
+                and f.get('url')
+            ]
+            if with_audio:
+                return with_audio[-1]['url']
+
+            # 3. Last resort — any URL
+            for f in reversed(formats):
+                if f.get('url'):
+                    return f['url']
+
             return None
     except Exception as e:
         logger.error(f"Audio URL error: {e}")
         return None
 
-def search_youtube(query: str) -> Optional[str]:
-    try:
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': True,
-            'default_search': 'ytsearch',
-            'cookiefile': COOKIES_FILE,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            search_results = ydl.extract_info(f"ytsearch:{query}", download=False)
-            if search_results and 'entries' in search_results:
-                first_video = search_results['entries'][0]
-                return first_video.get('url') or f"https://youtube.com/watch?v={first_video.get('id')}"
-            result = ydl.extract_info(query, download=False)
-            if result and result.get('id'):
-                return f"https://youtube.com/watch?v={result.get('id')}"
-            return None
-    except Exception as e:
-        logger.error(f"Search error: {e}")
-        return None
-
 def get_song_info(url: str) -> dict:
+    """Get song metadata."""
     try:
-        ydl_opts = {'quiet': True, 'no_warnings': True, 'cookiefile': COOKIES_FILE}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        opts = get_ydl_base_opts()
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
             return {
                 'title': info.get('title', 'Unknown'),
@@ -205,6 +234,7 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not success:
             await msg.edit_text("❌ Failed to join voice chat! Make sure bot has permissions.")
     except Exception as e:
+        logger.error(f"play_command error: {e}")
         await msg.edit_text(f"❌ Error: {str(e)}")
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -274,7 +304,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /help - Show this message
 
 🔒 **Private Bot**
-• Only 2 authorized groups
+• Only authorized groups
 • Only authorized users
 """
     await update.message.reply_text(text)
