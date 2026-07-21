@@ -66,14 +66,29 @@ def is_authorized(update: Update) -> tuple:
 
 def get_ydl_base_opts() -> dict:
     opts = {
-        'quiet'              : True,
-        'no_warnings'        : True,
-        'nocheckcertificate' : True,
-        'source_address'     : '0.0.0.0',
-        'geo_bypass'         : True,
+        'quiet'          : True,
+        'no_warnings'    : True,
+        'nocheckcertificate': True,
+        'source_address' : '0.0.0.0',
+        'geo_bypass'     : True,
+        'extractor_args' : {
+            'youtube': {
+                'player_client': ['android_testsuite', 'android', 'web'],
+                'skip'         : ['hls', 'dash'],
+            }
+        },
+        'http_headers'   : {
+            'User-Agent': (
+                'com.google.android.youtube/17.31.35 '
+                '(Linux; U; Android 11) gzip'
+            ),
+        },
+        'socket_timeout' : 30,
+        'retries'        : 10,
     }
     if os.path.exists(COOKIES_FILE):
         opts['cookiefile'] = COOKIES_FILE
+        logger.info("Using cookies file")
     return opts
 
 def delete_temp(path: Optional[str]):
@@ -102,29 +117,36 @@ def search_youtube(query: str) -> Optional[str]:
 def download_audio(youtube_url: str) -> Optional[str]:
     uid      = uuid.uuid4().hex
     out_tmpl = os.path.join(TMP_DIR, f"{uid}.%(ext)s")
-    opts = get_ydl_base_opts()
-    opts.update({
-        'format'         : 'bestaudio/best',
-        'outtmpl'        : out_tmpl,
-        'postprocessors' : [{
-            'key'             : 'FFmpegExtractAudio',
-            'preferredcodec'  : 'mp3',
-            'preferredquality': '192',
-        }],
-    })
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([youtube_url])
-        mp3_path = os.path.join(TMP_DIR, f"{uid}.mp3")
-        if os.path.exists(mp3_path):
-            return mp3_path
-        for f in os.listdir(TMP_DIR):
-            if f.startswith(uid):
-                return os.path.join(TMP_DIR, f)
-        return None
-    except Exception as e:
-        logger.error(f"Download error: {e}")
-        return None
+
+    # Try android_testsuite first, then fallback
+    for player in [['android_testsuite'], ['android_creator'], ['android'], ['web']]:
+        opts = get_ydl_base_opts()
+        opts['extractor_args']['youtube']['player_client'] = player
+        opts.update({
+            'format'         : 'bestaudio[ext=m4a]/bestaudio/best',
+            'outtmpl'        : out_tmpl,
+            'postprocessors' : [{
+                'key'             : 'FFmpegExtractAudio',
+                'preferredcodec'  : 'mp3',
+                'preferredquality': '128',
+            }],
+        })
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([youtube_url])
+            mp3_path = os.path.join(TMP_DIR, f"{uid}.mp3")
+            if os.path.exists(mp3_path):
+                logger.info(f"Downloaded with client: {player}")
+                return mp3_path
+            for f in os.listdir(TMP_DIR):
+                if f.startswith(uid):
+                    return os.path.join(TMP_DIR, f)
+        except Exception as e:
+            logger.warning(f"Download failed with {player}: {e}")
+            continue
+
+    logger.error("All download attempts failed")
+    return None
 
 def get_song_info(url: str) -> dict:
     try:
@@ -323,7 +345,7 @@ async def main():
         application.add_handler(CommandHandler(cmd, handler))
     application.add_handler(CallbackQueryHandler(callback_handler))
     print("=" * 50)
-    print("BURHAN MUSIC BOT — STARTED")
+    print("BURHAN MUSIC BOT STARTED")
     print("=" * 50)
     await application.initialize()
     await application.start()
