@@ -49,9 +49,6 @@ logger = logging.getLogger(__name__)
 
 # ============================================
 # Pyrogram Client + PyTgCalls
-# (ye ab main() ke andar banaye jaate hain, taaki
-#  sahi event loop se attach ho — warna "attached to
-#  a different loop" wali error aati hai)
 # ============================================
 app: Client = None
 call: PyTgCalls = None
@@ -64,32 +61,27 @@ active_chats = {}
 # ============================================
 
 def is_authorized_user(user_id: int) -> bool:
-    """Check if user is authorized."""
     return user_id in AUTHORIZED_USERS
 
 def is_authorized_group(chat_id: int) -> bool:
-    """Check if group is authorized."""
     return chat_id in AUTHORIZED_GROUPS
 
 def is_authorized(update: Update) -> tuple:
-    """Full authorization check."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    
-    # Check user
     if not is_authorized_user(user_id):
         return False, "user"
-    
-    # Check group
     if update.effective_chat.type in ['group', 'supergroup']:
         if not is_authorized_group(chat_id):
             return False, "group"
-    
     return True, "ok"
 
 # ============================================
 # YOUTUBE FUNCTIONS
 # ============================================
+
+# ✅ Cookies file path — bot.py ke saath cookies.txt rakho
+COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
 
 def get_audio_url(youtube_url: str) -> Optional[str]:
     """Get direct audio stream URL from YouTube."""
@@ -99,6 +91,7 @@ def get_audio_url(youtube_url: str) -> Optional[str]:
             'quiet': True,
             'no_warnings': True,
             'extractaudio': True,
+            'cookiefile': COOKIES_FILE,  # ✅ COOKIES ADDED
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
@@ -121,6 +114,7 @@ def search_youtube(query: str) -> Optional[str]:
             'no_warnings': True,
             'extract_flat': True,
             'default_search': 'ytsearch',
+            'cookiefile': COOKIES_FILE,  # ✅ COOKIES ADDED
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             search_results = ydl.extract_info(f"ytsearch:{query}", download=False)
@@ -138,7 +132,7 @@ def search_youtube(query: str) -> Optional[str]:
 def get_song_info(url: str) -> dict:
     """Get song metadata."""
     try:
-        ydl_opts = {'quiet': True, 'no_warnings': True}
+        ydl_opts = {'quiet': True, 'no_warnings': True, 'cookiefile': COOKIES_FILE}  # ✅ COOKIES ADDED
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             return {
@@ -163,10 +157,7 @@ async def play_in_voice_chat(chat_id: int, audio_url: str, title: str):
             await call.leave_group_call(chat_id)
         except Exception:
             pass
-        await call.play(
-            chat_id,
-            MediaStream(audio_url),
-        )
+        await call.play(chat_id, MediaStream(audio_url))
         if chat_id not in active_chats:
             active_chats[chat_id] = {'queue': [], 'current': None, 'playing': False}
         active_chats[chat_id]['current'] = {'title': title, 'url': audio_url}
@@ -196,17 +187,10 @@ async def stop_voice_chat(chat_id: int):
 # ============================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Welcome message."""
     user_id = update.effective_user.id
-    
     if not is_authorized_user(user_id):
-        await update.message.reply_text(
-            "❌ **Unauthorized User!**\n\n"
-            "This bot is for authorized users only.\n"
-            "Contact the bot owner for access."
-        )
+        await update.message.reply_text("❌ **Unauthorized User!**\n\nThis bot is for authorized users only.\nContact the bot owner for access.")
         return
-    
     text = """
 🎵 **Private Music Bot**
 
@@ -225,74 +209,49 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Play a song."""
     auth, reason = is_authorized(update)
     if not auth:
         if reason == "user":
-            await update.message.reply_text(
-                "❌ **Unauthorized User!**\n\n"
-                "You are not authorized to use this bot.\n"
-                "Contact the bot owner for access."
-            )
+            await update.message.reply_text("❌ **Unauthorized User!**\n\nYou are not authorized to use this bot.\nContact the bot owner for access.")
         elif reason == "group":
-            await update.message.reply_text(
-                "❌ **Unauthorized Group!**\n\n"
-                "This bot is only allowed in authorized groups."
-            )
+            await update.message.reply_text("❌ **Unauthorized Group!**\n\nThis bot is only allowed in authorized groups.")
         return
-    
     if not context.args:
         await update.message.reply_text("❌ Usage: /play <song_name>")
         return
-    
     query = ' '.join(context.args)
     chat_id = update.effective_chat.id
-    
     msg = await update.message.reply_text(f"🔍 Searching: `{query}`...")
-    
     try:
         song_url = search_youtube(query)
         if not song_url:
             await msg.edit_text("❌ No results found!")
             return
-        
         info = get_song_info(song_url)
         title = info.get('title', 'Unknown')
         duration = info.get('duration', 0)
         duration_str = f"{duration//60}:{duration%60:02d}" if duration else "Live"
-        
         audio_url = get_audio_url(song_url)
         if not audio_url:
             await msg.edit_text("❌ Could not get audio stream!")
             return
-        
-        keyboard = [
-            [InlineKeyboardButton("⏹️ Stop", callback_data="stop")],
-        ]
+        keyboard = [[InlineKeyboardButton("⏹️ Stop", callback_data="stop")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
         await msg.edit_text(
-            f"▶️ **Now Playing:**\n"
-            f"🎵 {title}\n"
-            f"⏱️ {duration_str}\n"
-            f"📺 {info.get('uploader', 'Unknown')}",
+            f"▶️ **Now Playing:**\n🎵 {title}\n⏱️ {duration_str}\n📺 {info.get('uploader', 'Unknown')}",
             reply_markup=reply_markup
         )
-        
         success = await play_in_voice_chat(chat_id, audio_url, title)
         if not success:
             await msg.edit_text("❌ Failed to join voice chat! Make sure bot has permissions.")
-    
     except Exception as e:
         await msg.edit_text(f"❌ Error: {str(e)}")
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Stop playing."""
     auth, reason = is_authorized(update)
     if not auth:
         await update.message.reply_text("❌ Unauthorized!")
         return
-    
     chat_id = update.effective_chat.id
     success = await stop_voice_chat(chat_id)
     if success:
@@ -301,17 +260,14 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Failed to stop!")
 
 async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show queue."""
     auth, reason = is_authorized(update)
     if not auth:
         await update.message.reply_text("❌ Unauthorized!")
         return
-    
     chat_id = update.effective_chat.id
     if chat_id not in active_chats or not active_chats[chat_id]['queue']:
         await update.message.reply_text("📭 Queue is empty!")
         return
-    
     queue = active_chats[chat_id]['queue']
     text = "📋 **Current Queue:**\n\n"
     for i, song in enumerate(queue, 1):
@@ -319,43 +275,34 @@ async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 async def current_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show current song."""
     auth, reason = is_authorized(update)
     if not auth:
         await update.message.reply_text("❌ Unauthorized!")
         return
-    
     chat_id = update.effective_chat.id
     if chat_id not in active_chats or not active_chats[chat_id]['current']:
         await update.message.reply_text("❌ Nothing is playing right now!")
         return
-    
     current = active_chats[chat_id]['current']
     await update.message.reply_text(f"▶️ **Now Playing:**\n🎵 {current.get('title', 'Unknown')}")
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle button callbacks."""
     query = update.callback_query
     await query.answer()
-    
     auth, reason = is_authorized(update)
     if not auth:
         await query.edit_message_text("❌ Unauthorized!")
         return
-    
     chat_id = update.effective_chat.id
-    
     if query.data == "stop":
         await stop_voice_chat(chat_id)
         await query.edit_message_text("⏹️ Stopped!")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Help message."""
     auth, reason = is_authorized(update)
     if not auth:
         await update.message.reply_text("❌ Unauthorized!")
         return
-    
     text = """
 🎵 **Private Music Bot Commands:**
 
@@ -373,13 +320,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 async def authcheck_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Check authorization status."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    
     user_status = "✅ Authorized" if is_authorized_user(user_id) else "❌ Unauthorized"
     group_status = "✅ Authorized" if is_authorized_group(chat_id) else "❌ Unauthorized"
-    
     text = f"""
 🔒 **Authorization Status:**
 
@@ -396,11 +340,7 @@ async def authcheck_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================
 
 async def main():
-    """Start the bot."""
     global app, call
-
-    # Client/PyTgCalls yahin banate hain, kyunki ab
-    # asyncio.run() ka event loop chalu ho chuka hai
     app = Client(
         "music_bot",
         api_id=API_ID,
@@ -408,12 +348,9 @@ async def main():
         session_string=SESSION_STRING
     )
     call = PyTgCalls(app)
-
     await app.start()
     await call.start()
-    
     application = Application.builder().token(BOT_TOKEN).build()
-    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("play", play_command))
@@ -422,19 +359,15 @@ async def main():
     application.add_handler(CommandHandler("current", current_command))
     application.add_handler(CommandHandler("authcheck", authcheck_command))
     application.add_handler(CallbackQueryHandler(callback_handler))
-    
     print("=" * 50)
     print("🎵 PRIVATE MUSIC BOT STARTED")
     print("=" * 50)
     print(f"✅ Authorized Users: {AUTHORIZED_USERS}")
     print(f"✅ Authorized Groups: {AUTHORIZED_GROUPS}")
     print("=" * 50)
-
     await application.initialize()
     await application.start()
     await application.updater.start_polling()
-
-    # Bot ko hamesha chalu rakhne ke liye
     stop_event = asyncio.Event()
     try:
         await stop_event.wait()
