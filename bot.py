@@ -8,8 +8,16 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 
 from pyrogram import Client
+import pyrogram.errors as _pyro_errors
+if not hasattr(_pyro_errors, 'GroupCallForbidden'):
+    if hasattr(_pyro_errors, 'GroupcallForbidden'):
+        _pyro_errors.GroupCallForbidden = _pyro_errors.GroupcallForbidden
+    else:
+        class _GCF(Exception): pass
+        _pyro_errors.GroupCallForbidden = _GCF
+
 from pytgcalls import PyTgCalls
-from pytgcalls.types.input_stream import AudioPiped
+from pytgcalls.types import MediaStream
 
 import yt_dlp
 
@@ -69,15 +77,15 @@ def get_ydl_base_opts() -> dict:
         opts['cookiefile'] = COOKIES_FILE
     return opts
 
-def delete_temp(path):
+def delete_temp(path: Optional[str]):
     try:
         if path and os.path.exists(path):
             os.remove(path)
-            logger.info(f"🗑️ Deleted temp: {path}")
+            logger.info(f"Deleted temp: {path}")
     except Exception:
         pass
 
-def search_youtube(query: str):
+def search_youtube(query: str) -> Optional[str]:
     try:
         opts = get_ydl_base_opts()
         opts['extract_flat'] = True
@@ -92,7 +100,7 @@ def search_youtube(query: str):
         logger.error(f"Search error: {e}")
         return None
 
-def download_audio(youtube_url: str):
+def download_audio(youtube_url: str) -> Optional[str]:
     uid      = uuid.uuid4().hex
     out_tmpl = os.path.join(TMP_DIR, f"{uid}.%(ext)s")
     opts = get_ydl_base_opts()
@@ -140,7 +148,7 @@ async def play_in_voice_chat(chat_id: int, file_path: str, title: str):
             await call.leave_group_call(chat_id)
         except Exception:
             pass
-        await call.join_group_call(chat_id, AudioPiped(file_path))
+        await call.play(chat_id, MediaStream(file_path))
         if chat_id not in active_chats:
             active_chats[chat_id] = {'queue': [], 'current': None,
                                      'playing': False, 'temp_file': None}
@@ -148,7 +156,7 @@ async def play_in_voice_chat(chat_id: int, file_path: str, title: str):
         active_chats[chat_id]['current']   = {'title': title, 'path': file_path}
         active_chats[chat_id]['playing']   = True
         active_chats[chat_id]['temp_file'] = file_path
-        logger.info(f"▶️ Playing {title} in {chat_id}")
+        logger.info(f"Playing {title} in {chat_id}")
         return True
     except Exception as e:
         logger.error(f"Play error: {e}")
@@ -168,10 +176,10 @@ async def stop_voice_chat(chat_id: int):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized_user(update.effective_user.id):
-        await update.message.reply_text("❌ Unauthorized!")
+        await update.message.reply_text("Unauthorized!")
         return
     await update.message.reply_text(
-        "🎵 *BURHAN MUSIC BOT*\n\n"
+        "*BURHAN MUSIC BOT*\n\n"
         "/play <song> — गाना बजाओ\n"
         "/stop — रोको\n"
         "/current — अभी क्या बज रहा है\n"
@@ -184,19 +192,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth, reason = is_authorized(update)
     if not auth:
-        msg = "❌ Unauthorized User!" if reason == "user" else "❌ Unauthorized Group!"
+        msg = "Unauthorized User!" if reason == "user" else "Unauthorized Group!"
         await update.message.reply_text(msg)
         return
     if not context.args:
-        await update.message.reply_text("❌ Usage: /play <song name>")
+        await update.message.reply_text("Usage: /play <song name>")
         return
     query   = ' '.join(context.args)
     chat_id = update.effective_chat.id
-    msg     = await update.message.reply_text(f"🔍 Searching: *{query}*...", parse_mode='Markdown')
+    msg     = await update.message.reply_text(f"Searching: *{query}*...", parse_mode='Markdown')
     try:
         song_url = search_youtube(query)
         if not song_url:
-            await msg.edit_text("❌ No results found!")
+            await msg.edit_text("No results found!")
             return
         info     = get_song_info(song_url)
         title    = info['title']
@@ -204,69 +212,69 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dur_str  = f"{dur//60}:{dur%60:02d}" if dur else "?"
         uploader = info['uploader']
         await msg.edit_text(
-            f"⬇️ *Downloading:* {title}\n⏱️ {dur_str} | 📺 {uploader}",
+            f"*Downloading:* {title}\n{dur_str} | {uploader}",
             parse_mode='Markdown'
         )
         file_path = await asyncio.get_event_loop().run_in_executor(
             None, download_audio, song_url
         )
         if not file_path:
-            await msg.edit_text("❌ Could not download audio!")
+            await msg.edit_text("Could not download audio!")
             return
-        keyboard     = [[InlineKeyboardButton("⏹️ Stop", callback_data="stop")]]
+        keyboard     = [[InlineKeyboardButton("Stop", callback_data="stop")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await msg.edit_text(
-            f"▶️ *Now Playing:*\n🎵 {title}\n⏱️ {dur_str} | 📺 {uploader}",
+            f"*Now Playing:*\n{title}\n{dur_str} | {uploader}",
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
         success = await play_in_voice_chat(chat_id, file_path, title)
         if not success:
-            await msg.edit_text("❌ Failed to join voice chat!\nBot को admin बनाओ और voice chat खुला रखो।")
+            await msg.edit_text("Failed to join voice chat! Bot ko admin banao aur voice chat khula rakho.")
     except Exception as e:
         logger.error(f"play_command error: {e}")
-        await msg.edit_text(f"❌ Error: {e}")
+        await msg.edit_text(f"Error: {e}")
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth, _ = is_authorized(update)
     if not auth:
-        await update.message.reply_text("❌ Unauthorized!")
+        await update.message.reply_text("Unauthorized!")
         return
     await stop_voice_chat(update.effective_chat.id)
-    await update.message.reply_text("⏹️ Stopped!")
+    await update.message.reply_text("Stopped!")
 
 async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth, _ = is_authorized(update)
     if not auth:
-        await update.message.reply_text("❌ Unauthorized!")
+        await update.message.reply_text("Unauthorized!")
         return
     chat_id = update.effective_chat.id
     q = active_chats.get(chat_id, {}).get('queue', [])
     if not q:
-        await update.message.reply_text("📭 Queue is empty!")
+        await update.message.reply_text("Queue is empty!")
         return
-    text = "📋 *Queue:*\n" + "\n".join(f"{i+1}. {s['title']}" for i, s in enumerate(q))
+    text = "*Queue:*\n" + "\n".join(f"{i+1}. {s['title']}" for i, s in enumerate(q))
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def current_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth, _ = is_authorized(update)
     if not auth:
-        await update.message.reply_text("❌ Unauthorized!")
+        await update.message.reply_text("Unauthorized!")
         return
     chat_id = update.effective_chat.id
     cur = active_chats.get(chat_id, {}).get('current')
     if not cur:
-        await update.message.reply_text("❌ Nothing playing!")
+        await update.message.reply_text("Nothing playing!")
         return
-    await update.message.reply_text(f"▶️ *Now Playing:*\n🎵 {cur['title']}", parse_mode='Markdown')
+    await update.message.reply_text(f"*Now Playing:*\n{cur['title']}", parse_mode='Markdown')
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth, _ = is_authorized(update)
     if not auth:
-        await update.message.reply_text("❌ Unauthorized!")
+        await update.message.reply_text("Unauthorized!")
         return
     await update.message.reply_text(
-        "🎵 *BURHAN MUSIC — Commands:*\n\n"
+        "*BURHAN MUSIC — Commands:*\n\n"
         "/play <song> — गाना बजाओ\n"
         "/stop — रोको\n"
         "/current — अभी क्या बज रहा है\n"
@@ -279,9 +287,9 @@ async def authcheck_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     cid = update.effective_chat.id
     await update.message.reply_text(
-        f"🔒 *Authorization Status*\n\n"
-        f"👤 User:  {'✅' if is_authorized_user(uid) else '❌'}\n"
-        f"💬 Group: {'✅' if is_authorized_group(cid) else '❌'}",
+        f"*Authorization Status*\n\n"
+        f"User:  {'YES' if is_authorized_user(uid) else 'NO'}\n"
+        f"Group: {'YES' if is_authorized_group(cid) else 'NO'}",
         parse_mode='Markdown'
     )
 
@@ -290,11 +298,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     auth, _ = is_authorized(update)
     if not auth:
-        await q.edit_message_text("❌ Unauthorized!")
+        await q.edit_message_text("Unauthorized!")
         return
     if q.data == "stop":
         await stop_voice_chat(update.effective_chat.id)
-        await q.edit_message_text("⏹️ Stopped!")
+        await q.edit_message_text("Stopped!")
 
 async def main():
     global app, call
@@ -316,7 +324,7 @@ async def main():
         application.add_handler(CommandHandler(cmd, handler))
     application.add_handler(CallbackQueryHandler(callback_handler))
     print("=" * 50)
-    print("🎵  BURHAN MUSIC BOT — STARTED")
+    print("BURHAN MUSIC BOT — STARTED")
     print("=" * 50)
     await application.initialize()
     await application.start()
