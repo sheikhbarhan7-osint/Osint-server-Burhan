@@ -1,10 +1,12 @@
 {
   "build": {
-    "dockerfile": "Dockerfile"
+    "builder": "NIXPACKS"
   },
   "deploy": {
-    "numReplicas": 1,
+    "startCommand": "python bot.py",
+    "healthcheckPath": "/",
+    "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
-    "healthcheckPath": "/health"
+    "restartPolicyMaxRetries": 10
   }
 }
