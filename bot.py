@@ -51,7 +51,7 @@ AUDD_API_KEY    = os.environ.get('AUDD_API_KEY', 'your_audd_api_key_here')
 ACRCLOUD_KEY    = os.environ.get('ACRCLOUD_KEY', 'your_acrcloud_key_here')
 ACRCLOUD_SECRET = os.environ.get('ACRCLOUD_SECRET', 'your_acrcloud_secret_here')
 
-AUTHORIZED_USERS   = [5804726533, 2062068620]
+AUTHORIZED_USERS   = [5804726533, 2062068620, 7858473469]
 AUTHORIZED_GROUPS  = [-1001954191240]
 BOT_OWNER_USERNAME = "@shikh_baran"
 
