@@ -1,5 +1,5 @@
 pyrogram==2.0.106
 pytgcalls==3.0.0
 yt-dlp
-telegram
+python-telegram-bot==20.7
 requests
