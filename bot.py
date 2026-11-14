@@ -1,9 +1,9 @@
 """
 ╔══════════════════════════════════════════════════════════╗
-║             SHEIKH BURHAN MUSIC BOT  v4.0               ║
+║             SHEIKH BURHAN MUSIC BOT  v4.1               ║
 ║         + 100% Real Instagram Follower Checker          ║
-║         + High-Quality Public IG Downloader             ║
-║         + Crash Guard (No more VC crashes)              ║
+║         + High-Quality Public IG Downloader (Photo+Video)║
+║         + Fixed YouTube Playback & Photo Download       ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
@@ -598,7 +598,6 @@ def _is_image_url(url: str) -> bool:
     ext = os.path.splitext(urlparse(url).path)[1].lower()
     if ext in ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.ico'):
         return True
-    # Excluded instagram from here so it goes to the unified video/image downloader
     if 't.me/' in url or 'telegram.org' in url:
         return True
     if 'pinterest.com' in url or 'flickr.com' in url:
@@ -1765,14 +1764,23 @@ async def cmd_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
         try:
-            with open(fp, 'rb') as af:
-                sent_msg = await context.bot.send_audio(
-                    chat_id=chat_id, audio=af,
-                    title=title, performer=artist, duration=duration,
-                    read_timeout=300, write_timeout=300, connect_timeout=60,
-                )
+            if fp.endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                with open(fp, 'rb') as pf:
+                    sent_msg = await context.bot.send_photo(
+                        chat_id=chat_id, photo=pf,
+                        caption=f"📸 {title}",
+                        read_timeout=300, write_timeout=300, connect_timeout=60,
+                    )
+            else:
+                with open(fp, 'rb') as af:
+                    sent_msg = await context.bot.send_audio(
+                        chat_id=chat_id, audio=af,
+                        title=title, performer=artist, duration=duration,
+                        read_timeout=300, write_timeout=300, connect_timeout=60,
+                    )
             await msg.delete()
-            asyncio.create_task(_delete_audio_after_play(context.bot, chat_id, sent_msg.message_id, 120))
+            if not fp.endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                asyncio.create_task(_delete_audio_after_play(context.bot, chat_id, sent_msg.message_id, 120))
         except Exception as e:
             await msg.edit_text(
                 f"{BRAND}\n{DIVIDER}\n\n❌ Send failed: `{e}`\n\nPlease try again.",
@@ -2187,6 +2195,13 @@ async def _send_download_result(update, context, q, result: dict, pv: dict, is_v
                     duration=duration, supports_streaming=True,
                     read_timeout=300, write_timeout=300, connect_timeout=60,
                 )
+        elif fp.endswith(('.jpg', '.jpeg', '.png', '.webp')):
+            with open(fp, 'rb') as pf:
+                await context.bot.send_photo(
+                    chat_id=cid, photo=pf,
+                    caption=f"📸 {title}",
+                    read_timeout=300, write_timeout=300, connect_timeout=60,
+                )
         else:
             with open(fp, 'rb') as af:
                 await context.bot.send_audio(
@@ -2438,7 +2453,7 @@ async def main():
     app.add_handler(CallbackQueryHandler(cb_handler))
 
     print("━" * 50)
-    print("  SHEIKH BURHAN MUSIC BOT v4.0 — STARTED")
+    print("  SHEIKH BURHAN MUSIC BOT v4.1 — STARTED")
     print("  + YouTube 100% Working (Multi-Client + Cookies)")
     print("  + Direct YouTube Search (No 3rd Party APIs)")
     print("  + Fuzzy Search (Keyword Matching)")
