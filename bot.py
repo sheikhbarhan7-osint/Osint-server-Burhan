@@ -6,6 +6,7 @@
 ║       + Auto-Delete Messages (Group Cleanup)            ║
 ║       + Simplified Controls (Only Pause/Resume/Skip)    ║
 ║       + NEW: Universal Image Downloader (TG/IG/Web)    ║
+║       + FIXED: Instagram Video Downloader (No Login)    ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
@@ -104,7 +105,7 @@ calls        : PyTgCalls = None
 active_chats    : Dict[int, dict] = {}
 pending_video   : Dict[str, dict] = {}
 pending_download: Dict[str, dict] = {}
-pending_image   : Dict[str, dict] = {}  # NEW: for image downloads
+pending_image   : Dict[str, dict] = {}
 _np_tasks       : Dict[int, asyncio.Task] = {}
 _messages_to_delete: List[Message] = []
 
@@ -116,10 +117,9 @@ os.makedirs(TMP_DIR,   exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  DYNAMIC COOKIES GENERATION (FIXED - UNCHANGED)
+#  DYNAMIC COOKIES GENERATION
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def _generate_cookies() -> str:
-    """Generates a fresh cookies.txt file in Netscape format with dynamic values."""
     import time
     timestamp = int(time.time())
     cookies = [
@@ -141,7 +141,6 @@ def _generate_cookies() -> str:
 def _get_cookie_opts():
     return {'cookiefile': _generate_cookies()}
 
-# 🔥 YouTube को ब्लॉक करने से बचाने के लिए 10 अलग-अलग क्लाइंट
 YT_PLAYER_CLIENTS = [
     ['android_creator'], ['android_testsuite'], ['ios'], ['android'],
     ['mweb'], ['tv_embedded'], ['web_creator'], ['web'], ['web_safari'], ['ios_creator']
@@ -151,7 +150,6 @@ YT_REGEX = re.compile(
     r'(https?://)?(www\.)?(youtube\.com/(watch\?v=|shorts/)|youtu\.be/)([a-zA-Z0-9_\-]{11})'
 )
 
-# 🔥 YouTube डाउनलोड के लिए हेडर्स
 YT_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -245,7 +243,7 @@ def _new_chat_state() -> dict:
     }
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  SONG CACHE & FUZZY SEARCH (Unchanged)
+#  SONG CACHE & FUZZY SEARCH
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 _cache_index: dict = {}
 CACHE_TTL    = 3600 * 2
@@ -306,7 +304,7 @@ def _pick_best_entry(query: str, entries: List[dict]) -> Optional[dict]:
     return ranked[0]
 
 # ════════════════════════════════════════════════════════════════════════
-#  🔥 NEW YOUTUBE AUDIO & VIDEO DOWNLOADER (100% Cookies Integrated)
+#  🔥 YOUTUBE DOWNLOADER
 # ════════════════════════════════════════════════════════════════════════
 
 def _yt_audio_dl(query_or_url: str, is_url: bool = False) -> Optional[dict]:
@@ -465,22 +463,91 @@ def _available_qualities(info: dict) -> List[str]:
             heights.add(int(h))
     return [f"{h}p" for h in sorted(heights, reverse=True)]
 
+# ════════════════════════════════════════════════════════════════════════
+#  🔥 FIXED INSTAGRAM DOWNLOADER (Bina Login Ke)
+# ════════════════════════════════════════════════════════════════════════
+def _instagram_dl(url: str) -> Optional[dict]:
+    uid = uuid.uuid4().hex
+    
+    # 1. Try yt-dlp first
+    try:
+        opts = {
+            'quiet': True, 'no_warnings': True, 'nocheckcertificate': True,
+            'format': 'best',
+            'outtmpl': os.path.join(TMP_DIR, f"ig_{uid}.%(ext)s"),
+            'headers': {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15'}
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if info and 'entries' in info:
+                info = info['entries'][0]
+            
+            for f in os.listdir(TMP_DIR):
+                if f.startswith(f"ig_{uid}") and f.endswith(('.mp4', '.jpg', '.webp')):
+                    fp = os.path.join(TMP_DIR, f)
+                    if os.path.getsize(fp) > 10000:
+                        return {
+                            'file': fp,
+                            'title': info.get('title', 'Instagram Media') if info else 'Instagram Media',
+                            'artist': info.get('uploader', 'Instagram') if info else 'Instagram',
+                            'duration': int(info.get('duration', 0)) if info else 0,
+                            'source': 'instagram',
+                            'is_video': fp.endswith('.mp4')
+                        }
+    except Exception as e:
+        logger.warning(f"IG yt-dlp failed: {e}")
+
+    # 2. Fallback to Vreden API (Works without login)
+    try:
+        api_url = f"https://api.vreden.web.id/api/igdl?url={url}"
+        res = requests.get(api_url, timeout=15)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get('status') and data.get('result'):
+                media_url = data['result'][0]['url']
+                ext = '.mp4' if '.mp4' in media_url else '.jpg'
+                fp = os.path.join(TMP_DIR, f"ig_{uid}{ext}")
+                
+                with requests.get(media_url, stream=True, timeout=30) as r:
+                    r.raise_for_status()
+                    with open(fp, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                
+                if os.path.getsize(fp) > 10000:
+                    return {
+                        'file': fp,
+                        'title': 'Instagram Video',
+                        'artist': 'Instagram',
+                        'duration': 0,
+                        'source': 'instagram',
+                        'is_video': ext == '.mp4'
+                    }
+    except Exception as e:
+        logger.warning(f"IG API fallback failed: {e}")
+
+    return None
+
 def _generic_audio_dl(url: str) -> Optional[dict]:
+    if 'instagram.com' in url:
+        res = _instagram_dl(url)
+        if res and res.get('is_video'):
+            # Instagram ke case me direct video file hi return kar denge
+            return res
     return _yt_audio_dl(url, is_url=True)
 
 def _generic_video_dl(url: str, quality: str) -> Optional[dict]:
+    if 'instagram.com' in url:
+        return _instagram_dl(url)
     return _yt_video_dl(url, quality)
 
 # ════════════════════════════════════════════════════════════════════════
-#  🔥 NEW: UNIVERSAL IMAGE DOWNLOADER (TG/Instagram/Web)
+#  🔥 UNIVERSAL IMAGE DOWNLOADER
 # ════════════════════════════════════════════════════════════════════════
-
 def _is_image_url(url: str) -> bool:
-    """Check if URL points to an image based on extension or known patterns."""
     ext = os.path.splitext(urlparse(url).path)[1].lower()
     if ext in ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.ico'):
         return True
-    # Instagram, Telegram, etc. often have image in URL pattern
     if 'instagram.com/p/' in url or 'instagram.com/reel/' in url:
         return True
     if 't.me/' in url or 'telegram.org' in url:
@@ -492,7 +559,6 @@ def _is_image_url(url: str) -> bool:
     return False
 
 def _generic_image_dl(url: str) -> Optional[list]:
-    """Download ALL images from Instagram carousel / any image URL."""
     uid = uuid.uuid4().hex
     results = []
 
@@ -510,7 +576,6 @@ def _generic_image_dl(url: str) -> Optional[list]:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             
-            # Agar carousel (multiple entries) hai
             entries = info.get('entries', [])
             if entries:
                 for entry in entries:
@@ -528,7 +593,6 @@ def _generic_image_dl(url: str) -> Optional[list]:
                 if results:
                     return results
 
-            # Agar single image
             for f in os.listdir(TMP_DIR):
                 if f.startswith(f"img_{uid}") and f.endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
                     fp = os.path.join(TMP_DIR, f)
@@ -542,7 +606,6 @@ def _generic_image_dl(url: str) -> Optional[list]:
     except Exception as e:
         logger.warning(f"yt-dlp image download failed: {e}")
 
-    # Fallback: direct URL download (single image)
     try:
         ext = os.path.splitext(urlparse(url).path)[1].lower()
         if not ext or ext not in ('.jpg', '.jpeg', '.png', '.gif', '.webp'):
@@ -567,7 +630,7 @@ def _generic_image_dl(url: str) -> Optional[list]:
     return results if results else None
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  LYRICS FETCHER (Unchanged)
+#  LYRICS FETCHER
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def _fetch_lyrics(title: str, artist: str) -> Optional[str]:
     try:
@@ -585,7 +648,7 @@ def _fetch_lyrics(title: str, artist: str) -> Optional[str]:
     return None
 
 # ════════════════════════════════════════════════════════════════════════
-#  🔥 MULTI-API AUDIO RECOGNITION (5 APIs - Unchanged)
+#  🔥 MULTI-API AUDIO RECOGNITION
 # ════════════════════════════════════════════════════════════════════════
 def _recognize_with_audd(file_path: str) -> Optional[dict]:
     if not os.path.exists(file_path) or os.path.getsize(file_path) < 5000:
@@ -764,10 +827,9 @@ def _format_recognition_result(metadata: dict) -> str:
     return txt
 
 # ════════════════════════════════════════════════════════════════════════
-#  🔥 AUTO-DELETE HELPER (IMPROVED)
+#  🔥 AUTO-DELETE HELPER
 # ════════════════════════════════════════════════════════════════════════
 async def _delete_later(msg: Message, delay: int = 10):
-    """Deletes a message after `delay` seconds."""
     await asyncio.sleep(delay)
     try:
         await msg.delete()
@@ -775,7 +837,6 @@ async def _delete_later(msg: Message, delay: int = 10):
         pass
 
 async def _delete_np_after_stop(chat_id: int, delay: int = 5):
-    """Deletes the 'Now Playing' message after a song ends."""
     ch = active_chats.get(chat_id, {})
     if ch and ch.get('np_msg_id'):
         try:
@@ -784,16 +845,13 @@ async def _delete_np_after_stop(chat_id: int, delay: int = 5):
             pass
 
 async def _delete_audio_after_play(bot, chat_id, message_id, delay: int = 120):
-    """DM में ऑडियो भेजने के बाद 2 मिनट में डिलीट"""
     await asyncio.sleep(delay)
     try:
         await bot.delete_message(chat_id, message_id)
     except:
         pass
 
-# NEW: Auto-delete sent photo after 15 seconds
 async def _delete_later_sent_photo(bot, chat_id, message_id, delay=15):
-    """Deletes sent photo after `delay` seconds."""
     await asyncio.sleep(delay)
     try:
         await bot.delete_message(chat_id, message_id)
@@ -801,7 +859,7 @@ async def _delete_later_sent_photo(bot, chat_id, message_id, delay=15):
         pass
 
 # ════════════════════════════════════════════════════════════════════════
-#  🔥 COMMAND HANDLERS (Modified with Auto-Delete + NEW Image Download)
+#  🔥 COMMAND HANDLERS
 # ════════════════════════════════════════════════════════════════════════
 
 async def cmd_recognize(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1094,9 +1152,6 @@ async def cmd_fingerprint(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     asyncio.create_task(_delete_later(msg, 10))
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  🔥 NEW COMMAND: /imagedl - Universal Image Downloader (UPDATED)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async def cmd_imagedl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth, reason = check_auth(update)
     if not auth:
@@ -1115,7 +1170,6 @@ async def cmd_imagedl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     url = ' '.join(context.args).strip()
     
-    # 🛠️ INSTAGRAM CAROUSEL FIX: Remove `?img_index` and other extra parameters
     if 'instagram.com' in url:
         url = re.sub(r'(\?|&)(img_index|igsh|igsi|igsid|utm_.*?)=[^&\s]*', '', url)
         if url.endswith('?') or url.endswith('&'):
@@ -1173,7 +1227,6 @@ async def cmd_imagedl(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         read_timeout=300, write_timeout=300, connect_timeout=60,
                     )
                 sent_count += 1
-                # 🔥 Auto-delete each photo after 15 seconds
                 asyncio.create_task(_delete_later_sent_photo(context.bot, update.effective_chat.id, sent_msg.message_id, 15))
             except Exception as e:
                 logger.warning(f"Image {idx+1} send error: {e}")
@@ -1191,9 +1244,6 @@ async def cmd_imagedl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Image download error: {e}")
         await msg.edit_text(f"{BRAND}\n{DIVIDER}\n\n❌ *Error:* `{e}`", parse_mode='Markdown')
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  PARALLEL ASYNC DOWNLOADER (Now entirely YouTube-based)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async def _run_in_pool(fn, *args):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(_pool, fn, *args)
@@ -1210,9 +1260,6 @@ async def find_parallel(query: str) -> Optional[dict]:
     except Exception:
         return None
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  VOICE CHAT HELPERS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def make_player_kb(paused: bool = False, loop: bool = False) -> InlineKeyboardMarkup:
     pause_lbl = "▶️ Resume" if paused else "⏸ Pause"
     loop_lbl  = "🔁 Loop ✅" if loop else "🔁 Loop"
@@ -1621,7 +1668,6 @@ async def cmd_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     read_timeout=300, write_timeout=300, connect_timeout=60,
                 )
             await msg.delete()
-            # DM में ऑडियो भेजने के बाद 2 मिनट में डिलीट
             asyncio.create_task(_delete_audio_after_play(context.bot, chat_id, sent_msg.message_id, 120))
         except Exception as e:
             await msg.edit_text(
@@ -1700,9 +1746,7 @@ async def cmd_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query   = ' '.join(context.args).strip()
     chat_id = update.effective_chat.id
 
-    # 🔥 NEW: Auto-detect if it's an image URL
     if _is_image_url(query):
-        # redirect to image download
         await cmd_imagedl(update, context)
         return
 
@@ -2005,9 +2049,6 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  CALLBACK HANDLER (Modified with Auto-Delete)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async def _edit_safe(q, text, kb=None, pm='Markdown'):
     try:
         if kb:
@@ -2060,7 +2101,6 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth, reason = check_auth(update)
     await q.answer()
 
-    # 🔥 Function to delete the callback message after action
     async def _delete_cb_msg(delay=5):
         await asyncio.sleep(delay)
         try:
@@ -2259,7 +2299,6 @@ async def main():
         parse_mode='Markdown'
     )))
 
-    # 🔥 NEW: Add image download command
     app.add_handler(CommandHandler(["imagedl", "img"], cmd_imagedl))
 
     app.add_handler(MessageHandler(filters.AUDIO | filters.VIDEO | filters.VOICE | filters.VIDEO_NOTE | filters.TEXT, auto_recognize_handler))
@@ -2274,7 +2313,7 @@ async def main():
     print("  + Album/Film Info")
     print("  + Auto-Delete Messages (Group Cleanup)")
     print("  + Simplified Controls (Only Pause/Resume/Skip)")
-    print("  + NEW: Universal Image Downloader (TG/IG/Web)")
+    print("  + FIXED: Universal Image & Video Downloader (TG/IG/Web)")
     print("━" * 50)
 
     await app.initialize()
