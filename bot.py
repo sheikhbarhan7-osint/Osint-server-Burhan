@@ -1,12 +1,9 @@
 """
 ╔══════════════════════════════════════════════════════════╗
-║             SHEIKH BURHAN MUSIC BOT  v3.5               ║
-║         Premium Professional Telegram Music Bot          ║
-║       + YouTube 100% Working (Multi-Client + Cookies)   ║
-║       + Auto-Delete Messages (Group Cleanup)            ║
-║       + Simplified Controls (Only Pause/Resume/Skip)    ║
-║       + NEW: Universal Image Downloader (TG/IG/Web)    ║
-║       + NEW: 100% Real Instagram Follower Checker       ║
+║             SHEIKH BURHAN MUSIC BOT  v4.0               ║
+║         + 100% Real Instagram Follower Checker          ║
+║         + High-Quality Public IG Downloader             ║
+║         + Crash Guard (No more VC crashes)              ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
@@ -52,7 +49,7 @@ SESSION_STRING = os.environ.get('SESSION_STRING')
 
 # 🔑 Instagram Verification Setup
 IG_SESSION_ID = os.environ.get('IG_SESSION_ID', '')
-IG_PAGE_USERNAME = "sheikh_burhan72"  # Tumhara page
+IG_PAGE_USERNAME = "sheikh_burhan72"
 IG_PAGE_URL = f"https://instagram.com/{IG_PAGE_USERNAME}"
 
 # 🔑 Multi-API Keys
@@ -64,7 +61,6 @@ AUTHORIZED_USERS   = [5804726533, 2062068620]
 AUTHORIZED_GROUPS  = [-1001954191240]
 BOT_OWNER_USERNAME = "@sheikh_barhan"
 
-# 🔥 Instagram Auth States
 VERIFIED_USERS = set()
 WAITING_FOR_IG = set()
 
@@ -115,7 +111,7 @@ calls        : PyTgCalls = None
 active_chats    : Dict[int, dict] = {}
 pending_video   : Dict[str, dict] = {}
 pending_download: Dict[str, dict] = {}
-pending_image   : Dict[str, dict] = {}  # NEW: for image downloads
+pending_image   : Dict[str, dict] = {}
 _np_tasks       : Dict[int, asyncio.Task] = {}
 _messages_to_delete: List[Message] = []
 
@@ -494,21 +490,97 @@ def _available_qualities(info: dict) -> List[str]:
             heights.add(int(h))
     return [f"{h}p" for h in sorted(heights, reverse=True)]
 
-# 🔥 INSTAGRAM DOWNLOADER (Bina Login Ke)
 def _instagram_dl(url: str) -> Optional[dict]:
     uid = uuid.uuid4().hex
+    
+    # 1. Try yt-dlp first (mobile user agent for better success)
     try:
-        res = requests.get(f"https://api.vreden.web.id/api/igdl?url={url}", timeout=15).json()
-        if res.get('status') and res.get('result'):
-            media_url = res['result'][0]['url']
-            ext = '.mp4' if '.mp4' in media_url else '.jpg'
-            fp = os.path.join(TMP_DIR, f"ig_{uid}{ext}")
-            with requests.get(media_url, stream=True, timeout=30) as r:
-                with open(fp, 'wb') as f:
-                    for chunk in r.iter_content(8192): f.write(chunk)
-            if os.path.getsize(fp) > 10000:
-                return {'file': fp, 'title': 'Instagram Media', 'source': 'instagram', 'is_video': ext == '.mp4'}
-    except Exception as e: logger.warning(f"IG API failed: {e}")
+        opts = {
+            'quiet': True, 'no_warnings': True, 'nocheckcertificate': True,
+            'format': 'best',
+            'outtmpl': os.path.join(TMP_DIR, f"ig_{uid}.%(ext)s"),
+            'headers': {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X)'}
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if info and 'entries' in info: info = info['entries'][0]
+            for f in os.listdir(TMP_DIR):
+                if f.startswith(f"ig_{uid}") and f.endswith(('.mp4', '.jpg', '.webp')):
+                    fp = os.path.join(TMP_DIR, f)
+                    if os.path.getsize(fp) > 10000:
+                        return {
+                            'file': fp,
+                            'title': info.get('title', 'Instagram Media') if info else 'Instagram Media',
+                            'artist': info.get('uploader', 'Instagram') if info else 'Instagram',
+                            'duration': int(info.get('duration', 0)) if info else 0,
+                            'source': 'instagram',
+                            'is_video': fp.endswith('.mp4')
+                        }
+    except Exception as e:
+        logger.warning(f"IG yt-dlp failed: {e}")
+
+    # 2. HTML Scraping Fallback (Extracts og:video or og:image)
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code == 200:
+            video_match = re.search(r'<meta property="og:video" content="([^"]+)"', r.text)
+            image_match = re.search(r'<meta property="og:image" content="([^"]+)"', r.text)
+            
+            media_url = None
+            is_vid = False
+            
+            if video_match:
+                media_url = video_match.group(1).replace('&amp;', '&')
+                is_vid = True
+            elif image_match:
+                media_url = image_match.group(1).replace('&amp;', '&')
+            
+            if media_url:
+                ext = '.mp4' if is_vid else '.jpg'
+                fp = os.path.join(TMP_DIR, f"ig_{uid}{ext}")
+                with requests.get(media_url, stream=True, timeout=30, headers=headers) as resp:
+                    resp.raise_for_status()
+                    with open(fp, 'wb') as f:
+                        for chunk in resp.iter_content(8192):
+                            f.write(chunk)
+                if os.path.getsize(fp) > 10000:
+                    return {'file': fp, 'title': 'Instagram Media', 'source': 'instagram', 'is_video': is_vid}
+    except Exception as e:
+        logger.warning(f"IG Scrape failed: {e}")
+
+    # 3. instagrapi fallback (If user is logged in and post is public)
+    if IG_SESSION_ID:
+        try:
+            cl = InstaClient()
+            cl.login_by_sessionid(IG_SESSION_ID)
+            match = re.search(r'(?:instagram\.com/(?:p|reel|tv)/)([^/?#&]+)', url)
+            if match:
+                shortcode = match.group(1)
+                media_pk = cl.media_pk_from_code(shortcode)
+                media_info = cl.media_info(media_pk)
+                
+                is_vid = media_info.media_type == 2
+                media_url = media_info.video_url if is_vid else media_info.thumbnail_url
+                ext = '.mp4' if is_vid else '.jpg'
+                fp = os.path.join(TMP_DIR, f"ig_{uid}{ext}")
+                
+                res = requests.get(str(media_url), stream=True, timeout=30)
+                if res.status_code == 200:
+                    with open(fp, 'wb') as f:
+                        for chunk in res.iter_content(8192): f.write(chunk)
+                    if os.path.getsize(fp) > 1000:
+                        return {
+                            'file': fp,
+                            'title': media_info.caption_text[:50] if media_info.caption_text else 'Instagram Media',
+                            'artist': media_info.user.username,
+                            'duration': 0,
+                            'source': 'instagram',
+                            'is_video': is_vid
+                        }
+        except Exception as e:
+            logger.warning(f"IG instagrapi failed: {e}")
+
     return None
 
 def _generic_audio_dl(url: str) -> Optional[dict]:
@@ -520,14 +592,13 @@ def _generic_video_dl(url: str, quality: str) -> Optional[dict]:
     return _yt_video_dl(url, quality)
 
 # ════════════════════════════════════════════════════════════════════════
-#  🔥 UNIVERSAL IMAGE DOWNLOADER (TG/Instagram/Web)
+#  🔥 UNIVERSAL IMAGE DOWNLOADER (TG/Web)
 # ════════════════════════════════════════════════════════════════════════
 def _is_image_url(url: str) -> bool:
     ext = os.path.splitext(urlparse(url).path)[1].lower()
     if ext in ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.ico'):
         return True
-    if 'instagram.com/p/' in url or 'instagram.com/reel/' in url:
-        return True
+    # Excluded instagram from here so it goes to the unified video/image downloader
     if 't.me/' in url or 'telegram.org' in url:
         return True
     if 'pinterest.com' in url or 'flickr.com' in url:
@@ -1362,6 +1433,8 @@ def _stop_np_updater(chat_id: int):
         t.cancel()
 
 async def vc_play_item(chat_id: int, item: dict, bot, seek_sec: int = 0):
+    if not calls:
+        return False, "Userbot offline (Invalid SESSION_STRING)."
     fp       = item['file']
     title    = item.get('title', 'Unknown')
     duration = item.get('duration', 0)
@@ -1424,11 +1497,12 @@ async def vc_play_item(chat_id: int, item: dict, bot, seek_sec: int = 0):
 
 async def vc_stop(chat_id: int):
     _stop_np_updater(chat_id)
-    for fn in ('stop_stream', 'leave_group_call'):
-        try:
-            await getattr(calls, fn)(chat_id)
-        except Exception:
-            pass
+    if calls:
+        for fn in ('stop_stream', 'leave_group_call'):
+            try:
+                await getattr(calls, fn)(chat_id)
+            except Exception:
+                pass
     ch = active_chats.get(chat_id)
     if ch:
         asyncio.create_task(_delete_np_after_stop(chat_id, 5))
@@ -1438,6 +1512,7 @@ async def vc_stop(chat_id: int):
         active_chats[chat_id] = _new_chat_state()
 
 async def vc_pause(chat_id: int) -> bool:
+    if not calls: return False
     ch = active_chats.get(chat_id, {})
     if not ch.get('playing') or ch.get('paused'): return False
     try:
@@ -1449,6 +1524,7 @@ async def vc_pause(chat_id: int) -> bool:
         logger.error(f"vc_pause: {e}"); return False
 
 async def vc_resume(chat_id: int) -> bool:
+    if not calls: return False
     ch = active_chats.get(chat_id, {})
     if not ch.get('paused'): return False
     try:
@@ -1505,6 +1581,7 @@ async def play_next(chat_id: int, bot) -> bool:
 _tg_bot_ref = None
 
 def _register_stream_end():
+    if not calls: return
     try:
         from pytgcalls.types import StreamAudioEnded, StreamVideoEnded
         stream_end_types = (StreamAudioEnded, StreamVideoEnded)
@@ -1860,12 +1937,13 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text(f"{BRAND}\n{DIVIDER}\n\n❌ Nothing is playing.")
         asyncio.create_task(_delete_later(msg, 10))
         return
-    for fn in ('stop_stream', 'leave_group_call'):
-        try:
-            await getattr(calls, fn)(chat_id)
-            break
-        except Exception:
-            pass
+    if calls:
+        for fn in ('stop_stream', 'leave_group_call'):
+            try:
+                await getattr(calls, fn)(chat_id)
+                break
+            except Exception:
+                pass
     clean(ch.get('current_file'))
     ch['playing'] = False; ch['current'] = None; ch['current_file'] = None
     ok = await play_next(chat_id, context.bot)
@@ -2000,7 +2078,10 @@ async def cmd_volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ch      = active_chats.setdefault(chat_id, _new_chat_state())
     ch['volume'] = vol
     try:
-        await calls.change_volume_call(chat_id, vol)
+        if calls:
+            await calls.change_volume_call(chat_id, vol)
+        else:
+            raise Exception("Userbot offline")
         msg = await update.message.reply_text(f"{BRAND}\n{DIVIDER}\n\n🔊 *Volume set to {vol}%*", parse_mode='Markdown')
         asyncio.create_task(_delete_later(msg, 10))
     except Exception as e:
@@ -2161,12 +2242,13 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.answer(f"❌ Not authorized! Your ID: {update.effective_user.id}", show_alert=True)
             return
         ch = active_chats.get(chat_id, {})
-        for fn in ('stop_stream', 'leave_group_call'):
-            try:
-                await getattr(calls, fn)(chat_id)
-                break
-            except Exception:
-                pass
+        if calls:
+            for fn in ('stop_stream', 'leave_group_call'):
+                try:
+                    await getattr(calls, fn)(chat_id)
+                    break
+                except Exception:
+                    pass
         clean(ch.get('current_file'))
         ch['playing'] = False; ch['current'] = None; ch['current_file'] = None
         ok = await play_next(chat_id, context.bot)
@@ -2295,14 +2377,26 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     global pyrogram_app, calls, _tg_bot_ref
 
-    pyrogram_app = Client(
-        "sbmusic", api_id=API_ID, api_hash=API_HASH,
-        session_string=SESSION_STRING
-    )
-    calls = PyTgCalls(pyrogram_app)
-    await pyrogram_app.start()
-    await calls.start()
-    _register_stream_end()
+    try:
+        print("Starting Pyrogram Userbot...")
+        pyrogram_app = Client(
+            "sbmusic", api_id=API_ID, api_hash=API_HASH,
+            session_string=SESSION_STRING
+        )
+        calls = PyTgCalls(pyrogram_app)
+        await pyrogram_app.start()
+        await calls.start()
+        _register_stream_end()
+        print("✅ Userbot started successfully! Voice chat is enabled.")
+    except Exception as e:
+        print("\n" + "="*50)
+        print("⚠️ ERROR: USERBOT FAILED TO START (Invalid SESSION_STRING)")
+        print(f"Reason: {e}")
+        print("The bot will continue running, but Voice Chat (VC) features will NOT work.")
+        print("Please fix your SESSION_STRING to enable VC.")
+        print("="*50 + "\n")
+        pyrogram_app = None
+        calls = None
 
     app = Application.builder().token(BOT_TOKEN).build()
     _tg_bot_ref = app.bot
@@ -2344,7 +2438,7 @@ async def main():
     app.add_handler(CallbackQueryHandler(cb_handler))
 
     print("━" * 50)
-    print("  SHEIKH BURHAN MUSIC BOT v3.5 — STARTED")
+    print("  SHEIKH BURHAN MUSIC BOT v4.0 — STARTED")
     print("  + YouTube 100% Working (Multi-Client + Cookies)")
     print("  + Direct YouTube Search (No 3rd Party APIs)")
     print("  + Fuzzy Search (Keyword Matching)")
@@ -2352,8 +2446,8 @@ async def main():
     print("  + Album/Film Info")
     print("  + Auto-Delete Messages (Group Cleanup)")
     print("  + Simplified Controls (Only Pause/Resume/Skip)")
-    print("  + NEW: Universal Image Downloader (TG/IG/Web)")
-    print("  + NEW: 100% Real Instagram Follower Checker")
+    print("  + Universal Image Downloader (TG/IG/Web)")
+    print("  + 100% Real Instagram Follower Checker")
     print("━" * 50)
 
     await app.initialize()
@@ -2369,9 +2463,11 @@ async def main():
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
-        try: await calls.stop()
+        try:
+            if calls: await calls.stop()
         except: pass
-        try: await pyrogram_app.stop()
+        try:
+            if pyrogram_app: await pyrogram_app.stop()
         except: pass
 
 if __name__ == "__main__":
